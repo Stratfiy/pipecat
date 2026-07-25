@@ -22,6 +22,10 @@ from loguru import logger
 from pipecat.frames.frames import (
     EndFrame,
     Frame,
+    FunctionCallCancelFrame,
+    FunctionCallInProgressFrame,
+    FunctionCallResultFrame,
+    FunctionCallsStartedFrame,
     InterimTranscriptionFrame,
     InterruptionFrame,
     LLMContextFrame,
@@ -226,10 +230,9 @@ class ClassifierUpstreamGate(FrameProcessor):
     """Gate that blocks upstream frames to classifier branch when conversation is detected.
 
     This gate sits at the bottom of the classifier branch and blocks frames flowing
-    upstream after conversation is detected. This prevents system frames like
-    FunctionCallsStartedFrame from reaching the classifier LLM after classification
-    is complete. Downstream frames always pass through. Only essential cleanup frames
-    (EndFrame, StopFrame) are allowed upstream when closed.
+    upstream after conversation is detected. Function-call lifecycle and result frames
+    are always blocked so tool activity in the main pipeline cannot trigger voicemail
+    classification. Downstream frames always pass through.
     """
 
     def __init__(self, conversation_notifier: BaseNotifier):
@@ -272,6 +275,20 @@ class ClassifierUpstreamGate(FrameProcessor):
         # Never allow InterruptionFrame into the classifier branch so the
         # classification LLM completes without being cancelled.
         if isinstance(frame, InterruptionFrame):
+            return
+
+        # Function-call frames are broadcast upstream by the main LLM. If they reach
+        # the classifier's assistant aggregator, a result can produce an LLMContextFrame
+        # and invoke the voicemail classifier without any user speech.
+        if direction == FrameDirection.UPSTREAM and isinstance(
+            frame,
+            (
+                FunctionCallsStartedFrame,
+                FunctionCallInProgressFrame,
+                FunctionCallResultFrame,
+                FunctionCallCancelFrame,
+            ),
+        ):
             return
 
         # Always allow downstream frames through
