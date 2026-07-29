@@ -568,6 +568,7 @@ class LLMGate(FrameProcessor):
         self._voicemail_notifier = voicemail_notifier
         self._buffered_context_frame: tuple[Frame, FrameDirection] | None = None
         self._gating_active = True
+        self._voicemail_detected = False
         self._conversation_task: asyncio.Task | None = None
         self._voicemail_task: asyncio.Task | None = None
 
@@ -600,10 +601,13 @@ class LLMGate(FrameProcessor):
         """
         await super().process_frame(frame, direction)
 
-        if self._gating_active and isinstance(frame, LLMContextFrame):
-            # Keep only the latest LLMContextFrame — it carries the most
-            # up-to-date context, so earlier ones are redundant.
-            self._buffered_context_frame = (frame, direction)
+        if isinstance(frame, LLMContextFrame):
+            if self._gating_active:
+                # Keep only the latest LLMContextFrame — it carries the most
+                # up-to-date context, so earlier ones are redundant.
+                self._buffered_context_frame = (frame, direction)
+            elif not self._voicemail_detected:
+                await self.push_frame(frame, direction)
         else:
             await self.push_frame(frame, direction)
 
@@ -624,11 +628,14 @@ class LLMGate(FrameProcessor):
     async def _wait_for_voicemail(self):
         """Wait for voicemail detection and discard the gated frame.
 
-        When voicemail is detected, the buffered LLMContextFrame is
-        discarded since the call will be ended by the voicemail event handler.
+        When voicemail is detected, the buffered LLMContextFrame and any later
+        context frames are discarded since the call is ending. Teardown can
+        flush pending user text into a new context frame before ``CancelFrame``
+        reaches the main LLM, so the gate must remain closed to context frames.
         """
         await self._voicemail_notifier.wait()
 
+        self._voicemail_detected = True
         self._gating_active = False
         self._buffered_context_frame = None
 

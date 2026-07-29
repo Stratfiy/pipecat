@@ -21,6 +21,8 @@ from pipecat.services.dograh.mps_billing import (
 from pipecat.services.openai.base_llm import OpenAILLMInvocationParams, OpenAILLMSettings
 from pipecat.services.openai.llm import OpenAILLMService
 
+METADATA_USAGE_CONTEXT_KEY = "usage_context"
+
 
 class DograhLLMService(OpenAILLMService):
     """A unified LLM service using Dograh's API with OpenAI-compatible interface.
@@ -41,6 +43,7 @@ class DograhLLMService(OpenAILLMService):
         api_key: str,
         base_url: str = "https://services.dograh.com/api/v1/llm",
         correlation_id: str | None = None,
+        usage_context: str | None = None,
         settings: OpenAILLMSettings | None = None,
         **kwargs,
     ):
@@ -50,6 +53,8 @@ class DograhLLMService(OpenAILLMService):
             api_key: The Dograh API key for authentication.
             base_url: The base URL for Dograh API. Defaults to "https://services.dograh.com/api/v1/llm".
             correlation_id: Optional server-generated correlation ID for MPS billing v2.
+            usage_context: Optional tag describing what this LLM instance is used
+                for (e.g. "voicemail_detection"). Sent as request metadata.
             settings: LLM settings including model, temperature, etc.
             **kwargs: Additional keyword arguments passed to OpenAILLMService.
         """
@@ -58,6 +63,7 @@ class DograhLLMService(OpenAILLMService):
             default_settings.apply_update(settings)
         self._base_url = base_url
         self._correlation_id = correlation_id
+        self._usage_context = usage_context
         super().__init__(api_key=api_key, base_url=base_url, settings=default_settings, **kwargs)
         self._start_metadata = None
 
@@ -112,6 +118,9 @@ class DograhLLMService(OpenAILLMService):
 
             params["metadata"]["correlation_id"] = correlation_id
             params["metadata"][MPS_BILLING_VERSION_KEY] = MPS_BILLING_VERSION_V2
+
+        if self._usage_context:
+            params.setdefault("metadata", {})[METADATA_USAGE_CONTEXT_KEY] = self._usage_context
 
         return params
 
