@@ -55,6 +55,7 @@ class ExternalUserTurnStopStrategy(BaseUserTurnStopStrategy):
         self._seen_interim_results = False
         self._event = asyncio.Event()
         self._task: asyncio.Task | None = None
+        self._external_stop_received = False
 
     @property
     def wait_for_transcript(self) -> bool:
@@ -71,6 +72,7 @@ class ExternalUserTurnStopStrategy(BaseUserTurnStopStrategy):
         self._text = ""
         self._user_speaking = False
         self._seen_interim_results = False
+        self._external_stop_received = False
         self._event.clear()
 
     async def setup(self, task_manager: BaseTaskManager):
@@ -115,10 +117,15 @@ class ExternalUserTurnStopStrategy(BaseUserTurnStopStrategy):
     async def _handle_user_started_speaking(self, _: UserStartedSpeakingFrame):
         """Handle when the external service indicates the user is speaking."""
         self._user_speaking = True
+        self._text = ""
+        self._seen_interim_results = False
+        self._external_stop_received = False
+        self._event.clear()
 
     async def _handle_user_stopped_speaking(self, _: UserStoppedSpeakingFrame):
         """Handle when the external service indicates the user has stopped speaking."""
         self._user_speaking = False
+        self._external_stop_received = True
         await self._maybe_trigger_user_turn_stopped()
 
     async def _handle_interim_transcription(self, frame: InterimTranscriptionFrame):
@@ -129,7 +136,23 @@ class ExternalUserTurnStopStrategy(BaseUserTurnStopStrategy):
         self._text += frame.text
         # We just got a final result, so let's reset interim results.
         self._seen_interim_results = False
-        # Reset aggregation timer.
+
+        # UserStoppedSpeakingFrame is a high-priority SystemFrame and can overtake
+        # a finalized transcript that the STT queued first. Once that finalized
+        # transcript arrives, no more transcript chunks are expected for this
+        # utterance, so waiting for the aggregation timeout only adds latency.
+        if (
+            self._wait_for_transcript
+            and self._external_stop_received
+            and not self._user_speaking
+            and frame.finalized
+            and self._text.strip()
+        ):
+            await self._maybe_trigger_user_turn_stopped()
+            return
+
+        # Preserve the debounce for non-finalized transcripts, which may be
+        # followed by additional transcription chunks.
         self._event.set()
 
     async def _task_handler(self):
