@@ -353,10 +353,8 @@ class TestBaseOutputTransportShutdown(unittest.IsolatedAsyncioTestCase):
     async def test_end_frame_proceeds_when_audio_write_never_returns(self):
         """A wedged transport write must not strand the EndFrame.
 
-        Transport writes have no timeout of their own, so a peer that has
-        stopped reading parks the audio task forever. `process_frame()` pushes
-        the EndFrame downstream only after `stop()` returns, so an unbounded
-        wait there hangs pipeline shutdown permanently.
+        `process_frame()` pushes the EndFrame downstream only after `stop()`
+        returns, so a write that never completes must not block `stop()`.
         """
         transport = await self._make_transport(audio_out_drain_timeout_secs=0.5)
         never_returns = asyncio.Event()

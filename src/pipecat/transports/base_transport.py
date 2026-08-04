@@ -38,13 +38,9 @@ class TransportParams(BaseModel):
             When False, the transport will wait for audio data instead of inserting silence.
         audio_out_max_consecutive_failures: Max failure of transport write before givingup
         audio_out_sleep_between_failures: Sleep interval between subsequent failures
-        audio_out_drain_timeout_secs: Maximum time to wait for pending output audio to
-            drain when an ``EndFrame`` stops the transport. A peer that has stopped
-            reading (half-open socket, or a telephony call already torn down on the
-            provider's side) parks the transport write with no timeout of its own, which
-            would otherwise block ``EndFrame`` inside the transport and hang pipeline
-            shutdown. On expiry the audio and clock tasks are cancelled so the
-            ``EndFrame`` continues downstream.
+        audio_out_drain_timeout_secs: How long the audio task may make no progress
+            before an ``EndFrame`` stops waiting for it and cancels it. Bounds the
+            stall rather than the total drain, so long queued playout still flushes.
         bot_vad_stop_secs: Fallback timeout (in seconds) used to mark the bot as
             stopped speaking when no explicit ``TTSStoppedFrame`` arrives (e.g.
             for realtime/speech-to-speech LLMs). Lower this for realtime models
