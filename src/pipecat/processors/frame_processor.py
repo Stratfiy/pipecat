@@ -718,7 +718,9 @@ class FrameProcessor(BaseObject):
         else:
             error_message = f"{error.processor} error: {error.error}"
 
-        logger.error(error_message)
+        # ErrorFrame consumers decide how to classify and report the failure. This
+        # diagnostic mirror stays below ERROR so applications do not count it twice.
+        logger.debug(error_message)
         await self.push_frame(error, FrameDirection.UPSTREAM)
 
     async def push_frame(self, frame: Frame, direction: FrameDirection = FrameDirection.DOWNSTREAM):
