@@ -25,9 +25,7 @@ async def test_local_shutdown_does_not_emit_client_disconnected(terminal_frame_t
 
     input_transport = transport.input()
     input_transport.push_frame = AsyncMock()
-    await input_transport.process_frame(
-        terminal_frame_type(), FrameDirection.DOWNSTREAM
-    )
+    await input_transport.process_frame(terminal_frame_type(), FrameDirection.DOWNSTREAM)
 
     on_client_disconnected.assert_not_awaited()
 
