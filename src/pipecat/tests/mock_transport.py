@@ -47,7 +47,6 @@ class MockInputTransport(FrameProcessor):
         sample_rate: int = 16000,
         num_channels: int = 1,
         on_client_connected: Callable[[], Awaitable[None]] | None = None,
-        on_client_disconnected: Callable[[], Awaitable[None]] | None = None,
         **kwargs,
     ):
         """Initialize the mock input transport.
@@ -60,8 +59,6 @@ class MockInputTransport(FrameProcessor):
             num_channels: Number of audio channels (default: 1).
             on_client_connected: Optional async callback fired on StartFrame to
                 simulate a client connecting at pipeline start.
-            on_client_disconnected: Optional async callback fired on EndFrame /
-                CancelFrame to simulate client disconnect at pipeline shutdown.
             **kwargs: Additional arguments passed to parent class.
         """
         super().__init__(**kwargs)
@@ -73,7 +70,6 @@ class MockInputTransport(FrameProcessor):
         self._audio_task: asyncio.Task | None = None
         self._running = False
         self._on_client_connected = on_client_connected
-        self._on_client_disconnected = on_client_disconnected
 
     async def _generate_audio_frames(self):
         """Generate audio frames at regular intervals."""
@@ -127,8 +123,6 @@ class MockInputTransport(FrameProcessor):
                 await self._on_client_connected()
         elif isinstance(frame, (EndFrame, CancelFrame)):
             self._stop_audio_generation()
-            if self._on_client_disconnected:
-                await self._on_client_disconnected()
 
         await self.push_frame(frame, direction)
 
@@ -235,8 +229,10 @@ class MockTransport(BaseTransport):
 
     - on_client_connected(transport, client): Fired when the input transport
       receives StartFrame, simulating a client connecting at pipeline start.
-    - on_client_disconnected(transport, client): Fired when the input transport
-      receives EndFrame or CancelFrame.
+    - on_client_disconnected(transport, client): Fired when
+      ``disconnect_client()`` is called to simulate a peer-initiated disconnect.
+      Local EndFrame / CancelFrame shutdown does not emit this event, matching
+      production transports.
     """
 
     def __init__(
@@ -279,7 +275,6 @@ class MockTransport(BaseTransport):
             sample_rate=audio_sample_rate,
             num_channels=audio_num_channels,
             on_client_connected=self._fire_client_connected,
-            on_client_disconnected=self._fire_client_disconnected,
         )
         self._output = MockOutputTransport(
             self._params,
@@ -291,7 +286,8 @@ class MockTransport(BaseTransport):
     async def _fire_client_connected(self):
         await self._call_event_handler("on_client_connected", None)
 
-    async def _fire_client_disconnected(self):
+    async def disconnect_client(self):
+        """Simulate the remote client disconnecting from the transport."""
         await self._call_event_handler("on_client_disconnected", None)
 
     def input(self) -> FrameProcessor:

@@ -418,6 +418,7 @@ class TestBaseOutputTransportShutdown(unittest.IsolatedAsyncioTestCase):
         # Drained on its own rather than being cancelled by the stall bound.
         self.assertTrue(sender._audio_queue.empty())
 
+
 class TestBaseOutputTransportAudioBuffering(unittest.IsolatedAsyncioTestCase):
     """Test for the trailing-partial-chunk audio buffer.
 
