@@ -1807,13 +1807,6 @@ class GeminiLiveLLMService(LLMService[GeminiLiveLLMAdapter]):
             return False
 
         self._pending_tool_results.pop(tool_call_id, None)
-
-        if self._is_gemini_3:
-            try:
-                await self._session.send_realtime_input(text=" ")
-            except Exception as e:
-                await self._handle_send_error(e)
-
         return True
 
     @traced_gemini_live(operation="llm_setup")
