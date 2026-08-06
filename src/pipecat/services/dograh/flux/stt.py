@@ -114,6 +114,7 @@ class DograhFluxSTTService(DeepgramFluxSTTBase, WebsocketService):
             keyterm=[],
             min_confidence=None,
             language_hints=None,
+            numerals=None,
         )
         if settings is not None:
             default_settings.apply_update(settings)
