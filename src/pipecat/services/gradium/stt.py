@@ -19,7 +19,6 @@ from typing import Any, cast
 
 from loguru import logger
 from pydantic import BaseModel
-from websockets.asyncio.client import connect as websocket_connect
 from websockets.protocol import State
 
 from pipecat.frames.frames import (
@@ -388,7 +387,7 @@ class GradiumSTTService(WebsocketSTTService):
                 "x-api-key": self._api_key,
                 "x-api-source": "pipecat",
             }
-            websocket = await websocket_connect(
+            websocket = await self._websocket_connect(
                 ws_url,
                 additional_headers=headers,
             )
@@ -528,6 +527,9 @@ class GradiumSTTService(WebsocketSTTService):
         # Technically `_settings.language` could be a raw string, but Language
         # is a StrEnum so downstream handles either.
         language = cast("Language | None", assert_given(self._settings.language))
+        # Report usage before the transcription frame so tracing can attach
+        # it to the STT span the frame closes.
+        await self.emit_stt_usage_metrics()
         await self.push_frame(
             TranscriptionFrame(
                 text,

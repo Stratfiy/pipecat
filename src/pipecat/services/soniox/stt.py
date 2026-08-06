@@ -15,7 +15,6 @@ from typing import Any
 
 from loguru import logger
 from pydantic import BaseModel
-from websockets.asyncio.client import connect as websocket_connect
 from websockets.protocol import State
 
 from pipecat.frames.frames import (
@@ -585,7 +584,7 @@ class SonioxSTTService(WebsocketSTTService):
 
             logger.debug("Connecting to Soniox STT")
 
-            self._websocket = await websocket_connect(self._url)
+            self._websocket = await self._websocket_connect(self._url)
 
             if not self._websocket:
                 await self.push_error(error_msg=f"Unable to connect to Soniox API at {self._url}")
@@ -666,6 +665,9 @@ class SonioxSTTService(WebsocketSTTService):
             if self._final_transcription_buffer:
                 text = "".join(map(lambda token: token["text"], self._final_transcription_buffer))
                 language = _language_from_tokens(self._final_transcription_buffer)
+                # Report usage before the transcription frame so tracing can
+                # attach it to the STT span the frame closes.
+                await self.emit_stt_usage_metrics()
                 # Soniox only pushes TranscriptionFrame when an end token is received,
                 # so every TranscriptionFrame is inherently finalized
                 await self.push_frame(

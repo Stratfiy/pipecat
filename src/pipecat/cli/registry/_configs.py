@@ -132,11 +132,29 @@ SERVICE_CONFIGS = {
         "        ),\n"
         "    )\n"
     ),
+    "baseten_llm": (
+        "BasetenLLMService(\n"
+        '        api_key=os.getenv("BASETEN_API_KEY"),\n'
+        "        settings=BasetenLLMService.Settings(\n"
+        '            model=os.getenv("BASETEN_MODEL"),\n'
+        '            system_instruction="You are a helpful assistant in a voice conversation. Your responses will be spoken aloud, so avoid emojis, bullet points, or other formatting that can\'t be spoken. Respond to what the user said in a creative, helpful, and brief way.",\n'
+        "        ),\n"
+        "    )\n"
+    ),
     "cerebras_llm": (
         "CerebrasLLMService(\n"
         '        api_key=os.getenv("CEREBRAS_API_KEY"),\n'
         "        settings=CerebrasLLMService.Settings(\n"
         '            model=os.getenv("CEREBRAS_MODEL"),\n'
+        '            system_instruction="You are a helpful assistant in a voice conversation. Your responses will be spoken aloud, so avoid emojis, bullet points, or other formatting that can\'t be spoken. Respond to what the user said in a creative, helpful, and brief way.",\n'
+        "        ),\n"
+        "    )\n"
+    ),
+    "crusoe_llm": (
+        "CrusoeLLMService(\n"
+        '        api_key=os.getenv("CRUSOE_API_KEY"),\n'
+        "        settings=CrusoeLLMService.Settings(\n"
+        '            model=os.getenv("CRUSOE_MODEL"),\n'
         '            system_instruction="You are a helpful assistant in a voice conversation. Your responses will be spoken aloud, so avoid emojis, bullet points, or other formatting that can\'t be spoken. Respond to what the user said in a creative, helpful, and brief way.",\n'
         "        ),\n"
         "    )\n"
@@ -363,6 +381,14 @@ SERVICE_CONFIGS = {
         "        ),\n"
         "    )\n"
     ),
+    "deepgram_flux_tts": (
+        "DeepgramFluxTTSService(\n"
+        '        api_key=os.getenv("DEEPGRAM_API_KEY"),\n'
+        "        settings=DeepgramFluxTTSService.Settings(\n"
+        '            voice=os.getenv("DEEPGRAM_VOICE_ID"),\n'
+        "        ),\n"
+        "    )\n"
+    ),
     "deepgram_sagemaker_tts": (
         "DeepgramSageMakerTTSService(\n"
         '        endpoint_name=os.getenv("DEEPGRAM_SAGEMAKER_TTS_ENDPOINT_NAME"),\n'
@@ -506,6 +532,13 @@ SERVICE_CONFIGS = {
         "PiperTTSService(\n"
         "        settings=PiperTTSService.Settings(\n"
         '            voice=os.getenv("PIPER_VOICE_ID"),\n'
+        "        ),\n"
+        "    )\n"
+    ),
+    "pockettts_tts": (
+        "PocketTTSService(\n"
+        "        settings=PocketTTSService.Settings(\n"
+        '            voice=os.getenv("POCKET_TTS_VOICE_ID", "alba"),\n'
         "        ),\n"
         "    )\n"
     ),

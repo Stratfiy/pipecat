@@ -14,6 +14,15 @@ from dataclasses import dataclass
 
 from loguru import logger
 
+try:
+    from aws_sdk_sagemaker_runtime_http2.models import ResponseStreamEventPayloadPart
+except ModuleNotFoundError as e:
+    logger.error(f"Exception: {e}")
+    logger.error(
+        'In order to use Deepgram Flux on SageMaker, you need to `uv add "pipecat-ai[sagemaker]"`.'
+    )
+    raise ImportError(f"Missing module: {e}") from e
+
 from pipecat.frames.frames import (
     ErrorFrame,
     Frame,
@@ -123,6 +132,7 @@ class DeepgramFluxSageMakerSTTService(DeepgramFluxSTTBase):
             keyterm=[],
             min_confidence=None,
             language_hints=None,
+            numerals=None,
         )
 
         # Apply settings delta
@@ -213,6 +223,9 @@ class DeepgramFluxSageMakerSTTService(DeepgramFluxSTTBase):
     async def _disconnect(self):
         """Disconnect from the SageMaker endpoint."""
         self._connection_established_event.clear()
+        # Discard any in-flight/pending Configure — the connection is going
+        # away, so it can no longer be acked or sent.
+        self._reset_configure_state()
 
         if self._client and self._client.is_active:
             logger.debug("Disconnecting from Deepgram Flux on SageMaker...")
@@ -266,7 +279,7 @@ class DeepgramFluxSageMakerSTTService(DeepgramFluxSTTBase):
                 if result is None:
                     break
 
-                if hasattr(result, "value") and hasattr(result.value, "bytes_"):
+                if isinstance(result, ResponseStreamEventPayloadPart):
                     if result.value.bytes_:
                         response_data = result.value.bytes_.decode("utf-8")
 

@@ -19,7 +19,6 @@ from dataclasses import dataclass
 from typing import Any
 
 from loguru import logger
-from websockets.asyncio.client import connect as websocket_connect
 from websockets.protocol import State
 
 from pipecat.frames.frames import (
@@ -222,7 +221,7 @@ class TogetherSTTService(WebsocketSTTService):
                 "OpenAI-Beta": "realtime=v1",
             }
 
-            self._websocket = await websocket_connect(url, additional_headers=headers)
+            self._websocket = await self._websocket_connect(url, additional_headers=headers)
             await self._call_event_handler("on_connected")
         except Exception as e:
             await self.push_error(
@@ -347,6 +346,9 @@ class TogetherSTTService(WebsocketSTTService):
         """
         transcript = evt.get("transcript", "").strip()
         if transcript:
+            # Report usage before the transcription frame so tracing can
+            # attach it to the STT span the frame closes.
+            await self.emit_stt_usage_metrics()
             await self.push_frame(
                 TranscriptionFrame(
                     transcript,

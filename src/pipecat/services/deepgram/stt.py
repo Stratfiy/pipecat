@@ -8,6 +8,7 @@
 
 import asyncio
 import inspect
+import time
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field, fields
 from typing import Any
@@ -35,11 +36,13 @@ from pipecat.services.stt_latency import DEEPGRAM_TTFS_P99
 from pipecat.services.stt_service import STTService
 from pipecat.transcriptions.language import Language
 from pipecat.utils.deprecation import deprecated
+from pipecat.utils.network import QuickFailureTracker, exponential_backoff_time
 from pipecat.utils.time import time_now_iso8601
 from pipecat.utils.tracing.service_decorators import traced_stt
 
 try:
     from deepgram import AsyncDeepgramClient
+    from deepgram.core import ApiError
     from deepgram.core.events import EventType
     from deepgram.listen.v1.types import (
         ListenV1CloseStream,
@@ -458,6 +461,11 @@ class DeepgramSTTService(STTService):
         self._connection = None
         self._connection_task = None
         self._connection_ready = asyncio.Event()
+        # Rapid failure detection: if the connection dies within
+        # QuickFailureTracker.min_stable_duration of connecting (e.g. an invalid
+        # API key rejected at the WebSocket handshake) enough times in a row,
+        # stop retrying instead of looping forever. Shared with WebsocketService.
+        self._quick_failure_tracker = QuickFailureTracker()
 
     def can_generate_metrics(self) -> bool:
         """Check if this service can generate processing metrics.
@@ -610,6 +618,7 @@ class DeepgramSTTService(STTService):
 
     async def _connect(self):
         logger.debug("Connecting to Deepgram")
+        self._quick_failure_tracker.reset()
         self._connection_task = self.create_task(self._connection_handler())
 
     async def _disconnect(self):
@@ -634,12 +643,19 @@ class DeepgramSTTService(STTService):
     async def _connection_handler(self):
         """Manages the full WebSocket lifecycle inside a single async with block.
 
-        Reconnects automatically after transient errors. Exits cleanly when
+        Reconnects automatically after transient errors, with exponential
+        backoff between attempts. A 4xx ``ApiError`` (e.g. an invalid API key
+        rejected at the handshake) stops retrying immediately, since the SDK
+        has already told us the request itself is bad. Any other error that
+        keeps failing quickly is also tracked by ``_quick_failure_tracker``,
+        which gives up after enough consecutive quick failures so a
+        persistent problem can't retry forever unnoticed. Exits cleanly when
         the task is cancelled (i.e. on stop/cancel).
         """
         while True:
             connect_kwargs = self._build_connect_kwargs()
             keepalive_task = None
+            attempt_start = time.monotonic()
             try:
                 async with self._client.listen.v1.connect(**connect_kwargs) as connection:
                     self._connection = connection
@@ -653,13 +669,33 @@ class DeepgramSTTService(STTService):
                         self._keepalive_handler(), f"{self}::keepalive"
                     )
                     await connection.start_listening()
+            except ApiError as e:
+                if e.status_code is not None and 400 <= e.status_code < 500:
+                    msg = f"Deepgram rejected the connection (status {e.status_code}): {e}"
+                    await self.push_error(error_msg=msg, exception=e)
+                    return
+                logger.warning(f"{self}: Connection lost, will retry: {e}")
+                await self.push_error(error_msg=f"connection error: {e}", exception=e)
             except Exception as e:
                 logger.warning(f"{self}: Connection lost, will retry: {e}")
+                await self.push_error(error_msg=f"connection error: {e}", exception=e)
             finally:
                 self._connection_ready.clear()
                 self._connection = None
                 if keepalive_task:
                     await self.cancel_task(keepalive_task)
+
+            duration = time.monotonic() - attempt_start
+            result = self._quick_failure_tracker.record(duration)
+            if result.should_give_up:
+                msg = (
+                    "connection failed "
+                    f"{self._quick_failure_tracker.max_consecutive_failures} times "
+                    "immediately after connecting"
+                )
+                await self.push_error(error_msg=msg)
+                return
+            await asyncio.sleep(exponential_backoff_time(self._quick_failure_tracker.count))
 
     async def _keepalive_handler(self):
         """Periodically send KeepAlive frames to prevent server-side timeout.
@@ -704,13 +740,16 @@ class DeepgramSTTService(STTService):
             if message.channel.alternatives[0].languages:
                 language = message.channel.alternatives[0].languages[0]
                 language = Language(language)
-            if len(transcript) > 0:
-                if is_final:
-                    # Check if this response is from a finalize() call.
-                    # Only mark as finalized when both we requested it AND Deepgram confirms it.
-                    from_finalize = getattr(message, "from_finalize", False) or False
-                    if from_finalize:
-                        self.confirm_finalize()
+            if is_final:
+                # Check if this response is from a finalize() call.
+                # Only mark as finalized when both we requested it AND Deepgram confirms it.
+                from_finalize = getattr(message, "from_finalize", False) or False
+                if from_finalize:
+                    self.confirm_finalize()
+                if len(transcript) > 0:
+                    # Report usage before the transcription frame so tracing can
+                    # attach it to the STT span the frame closes.
+                    await self.emit_stt_usage_metrics()
                     await self.push_frame(
                         TranscriptionFrame(
                             transcript,
@@ -722,17 +761,23 @@ class DeepgramSTTService(STTService):
                     )
                     await self._handle_transcription(transcript, is_final, language)
                     await self.stop_processing_metrics()
-                else:
-                    # For interim transcriptions, just push the frame without tracing
-                    await self.push_frame(
-                        InterimTranscriptionFrame(
-                            transcript,
-                            self._user_id,
-                            time_now_iso8601(),
-                            language,
-                            result=message,
-                        )
+                elif from_finalize:
+                    # Deepgram already sent the transcript via a regular is_final
+                    # before the finalize response arrived (empty). Report STT TTFB
+                    # immediately instead of falling to the timeout.
+                    await self.stop_ttfb_metrics()
+                    await self._cancel_ttfb_timeout()
+            elif len(transcript) > 0:
+                # For interim transcriptions, just push the frame without tracing
+                await self.push_frame(
+                    InterimTranscriptionFrame(
+                        transcript,
+                        self._user_id,
+                        time_now_iso8601(),
+                        language,
+                        result=message,
                     )
+                )
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         """Process frames with Deepgram-specific handling.

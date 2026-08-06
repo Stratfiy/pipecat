@@ -28,7 +28,7 @@ from typing_extensions import override
 from pipecat.adapters.schemas.direct_function import DirectFunction
 from pipecat.adapters.schemas.function_schema import FunctionSchema
 from pipecat.adapters.schemas.tools_schema import ToolsSchema
-from pipecat.adapters.services.gemini_adapter import GeminiLLMAdapter
+from pipecat.adapters.services.gemini_live_adapter import GeminiLiveLLMAdapter
 from pipecat.frames.frames import (
     AggregationType,
     BotStartedSpeakingFrame,
@@ -95,8 +95,10 @@ try:
         HttpOptions,
         LiveConnectConfig,
         LiveServerMessage,
+        MediaModality,
         MediaResolution,
         Modality,
+        ModalityTokenCount,
         Part,
         ProactivityConfig,
         RealtimeInputConfig,
@@ -116,6 +118,28 @@ except ModuleNotFoundError as e:
 # Connection management constants
 MAX_CONSECUTIVE_FAILURES = 3
 CONNECTION_ESTABLISHED_THRESHOLD = 10.0  # seconds
+
+
+def _audio_token_count(details: list[ModalityTokenCount] | None) -> int | None:
+    """Get the AUDIO token count from a modality breakdown, if reported.
+
+    Gemini omits modalities with no tokens (and omits the list entirely when
+    there is no breakdown), so absence means "not reported" rather than zero.
+
+    Args:
+        details: A modality breakdown from usage metadata, e.g.
+            ``prompt_tokens_details``.
+
+    Returns:
+        The AUDIO token count, or ``None`` if not reported.
+    """
+    if not details:
+        return None
+    for entry in details:
+        if entry.modality == MediaModality.AUDIO:
+            return entry.token_count
+    return None
+
 
 # Pre-roll cushion added on top of the auto-sized duration (start_secs), to
 # absorb small timing slop between start_secs and the audio actually clipped,
@@ -374,7 +398,7 @@ class GeminiLiveLLMSettings(LLMSettings):
     proactivity: ProactivityConfig | dict | _NotGiven = field(default_factory=lambda: NOT_GIVEN)
 
 
-class GeminiLiveLLMService(LLMService[GeminiLLMAdapter]):
+class GeminiLiveLLMService(LLMService[GeminiLiveLLMAdapter]):
     """Provides access to Google's Gemini Live API.
 
     This service enables real-time conversations with Gemini, supporting both
@@ -397,8 +421,8 @@ class GeminiLiveLLMService(LLMService[GeminiLLMAdapter]):
     Settings = GeminiLiveLLMSettings
     _settings: Settings
 
-    # Overriding the default adapter to use the Gemini one.
-    adapter_class = GeminiLLMAdapter
+    # Overriding the default adapter to use the Gemini Live one.
+    adapter_class = GeminiLiveLLMAdapter
 
     def service_metadata_frame(self) -> LLMServiceMetadataFrame:
         """Realtime service; emits no server-side turn frames, so recommends no external strategies."""
@@ -1031,7 +1055,9 @@ class GeminiLiveLLMService(LLMService[GeminiLLMAdapter]):
                     tool_name = self._tool_call_id_to_name.get(
                         async_payload.tool_call_id, "tool_call_result"
                     )
-                    response_dict = GeminiLLMAdapter.to_function_response_dict(async_payload.result)
+                    response_dict = GeminiLiveLLMAdapter.to_function_response_dict(
+                        async_payload.result
+                    )
                     delivered = True
                     if send_new_results:
                         delivered = await self._tool_result(
@@ -1051,7 +1077,7 @@ class GeminiLiveLLMService(LLMService[GeminiLLMAdapter]):
                 if tool_call_id and tool_call_id not in self._completed_tool_calls:
                     # Found a newly-completed function call - send the result to the service
                     tool_name = self._tool_call_id_to_name.get(tool_call_id, "tool_call_result")
-                    response_dict = GeminiLLMAdapter.to_function_response_dict(
+                    response_dict = GeminiLiveLLMAdapter.to_function_response_dict(
                         message.get("content")
                     )
                     delivered = True
@@ -2201,6 +2227,9 @@ class GeminiLiveLLMService(LLMService[GeminiLLMAdapter]):
             total_tokens=total_tokens,
             cache_read_input_tokens=usage.cached_content_token_count,
             reasoning_tokens=usage.thoughts_token_count,
+            input_audio_tokens=_audio_token_count(usage.prompt_tokens_details),
+            output_audio_tokens=_audio_token_count(usage.response_tokens_details),
+            cache_read_input_audio_tokens=_audio_token_count(usage.cache_tokens_details),
         )
 
         await self.start_llm_usage_metrics(tokens)

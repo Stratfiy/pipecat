@@ -19,7 +19,6 @@ from typing import Any, cast
 
 from loguru import logger
 from websockets import Subprotocol
-from websockets.asyncio.client import connect as websocket_connect
 from websockets.protocol import State
 
 from pipecat.frames.frames import (
@@ -322,7 +321,7 @@ class AWSTranscribeSTTService(WebsocketSTTService):
             logger.debug(f"{self} Connecting to WebSocket with URL: {presigned_url[:100]}...")
 
             # Connect with the required headers and settings
-            self._websocket = await websocket_connect(
+            self._websocket = await self._websocket_connect(
                 presigned_url,
                 additional_headers=additional_headers,
                 subprotocols=[Subprotocol("mqtt")],
@@ -551,6 +550,10 @@ class AWSTranscribeSTTService(WebsocketSTTService):
                                     "Language | None", assert_given(self._settings.language)
                                 )
                                 if is_final:
+                                    # Report usage before the transcription
+                                    # frame so tracing can attach it to the
+                                    # STT span the frame closes.
+                                    await self.emit_stt_usage_metrics()
                                     await self.push_frame(
                                         TranscriptionFrame(
                                             transcript,

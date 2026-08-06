@@ -398,6 +398,12 @@ class UserTurnCompletionLLMServiceMixin(FrameProcessor):
         elif isinstance(frame, UserStartedSpeakingFrame):
             # A new user turn begins, so allow one fresh spoken completion.
             self._user_turn_completion_voiced = False
+        elif isinstance(frame, LLMMessagesAppendFrame) and frame.run_llm:
+            # An externally appended message that asks for a run (e.g. a user-idle
+            # check-in) is an explicit request for fresh speech, and it arrives
+            # precisely while the user is silent. Clear the voiced latch so the ✓
+            # guard in ``_push_turn_text`` does not drop its text.
+            self._user_turn_completion_voiced = False
         elif isinstance(frame, VADUserStartedSpeakingFrame):
             # The user resumed speaking within the same open turn. A new turn's
             # InterruptionFrame does not fire for a resume inside an already-open
@@ -434,6 +440,13 @@ class UserTurnCompletionLLMServiceMixin(FrameProcessor):
             # so the assistant aggregator's ``_user_speaking`` is False by
             # the time a ``FunctionCallResultFrame`` arrives.
             await self._broadcast_turn_completion()
+            # A function call means a fresh post-tool inference is coming, and
+            # that response is expected to speak. Clear the voiced latch so the
+            # ✓ guard in ``_push_turn_text`` does not drop its text. The
+            # response that voiced the ✓ keeps streaming: its ``_turn_marker``
+            # is COMPLETE, so its text takes the COMPLETE branch, not the
+            # latch guard.
+            self._user_turn_completion_voiced = False
         elif isinstance(frame, LLMFullResponseStartFrame):
             # A new LLM response is starting. If an incomplete timeout is still
             # pending from a prior ○/◐, the LLM is already re-engaging: either

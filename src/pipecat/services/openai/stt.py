@@ -506,7 +506,7 @@ class OpenAIRealtimeSTTService(WebsocketSTTService):
 
             self._session_ready = False
             url = f"{self._base_url}?intent=transcription"
-            self._websocket = await websocket_connect(
+            self._websocket = await self._websocket_connect(
                 uri=url,
                 additional_headers={
                     "Authorization": f"Bearer {self._api_key}",
@@ -728,6 +728,9 @@ class OpenAIRealtimeSTTService(WebsocketSTTService):
         """
         transcript = evt.get("transcript", "")
         if transcript:
+            # Report usage before the transcription frame so tracing can
+            # attach it to the STT span the frame closes.
+            await self.emit_stt_usage_metrics()
             await self.push_frame(
                 TranscriptionFrame(
                     transcript,

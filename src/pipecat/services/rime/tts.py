@@ -19,7 +19,6 @@ from typing import Any, ClassVar
 import aiohttp
 from loguru import logger
 from pydantic import BaseModel
-from websockets.asyncio.client import connect as websocket_connect
 from websockets.protocol import State
 
 from pipecat.frames.frames import (
@@ -469,7 +468,7 @@ class RimeTTSService(WebsocketTTSService):
             headers = {"Authorization": f"Bearer {self._api_key}"}
             self._audio_remainder = b""
             self._audio_remainder_context_id = None
-            self._websocket = await websocket_connect(url, additional_headers=headers)
+            self._websocket = await self._websocket_connect(url, additional_headers=headers)
 
             await self._call_event_handler("on_connected")
         except Exception as e:
@@ -631,7 +630,6 @@ class RimeTTSService(WebsocketTTSService):
         Yields:
             Frame: Audio frames containing the synthesized speech.
         """
-        logger.debug(f"{self}: Generating TTS [{text}]")
         try:
             if not self._websocket or self._websocket.state is State.CLOSED:
                 await self._connect()
@@ -823,8 +821,6 @@ class RimeHttpTTSService(TTSService):
         Yields:
             Frame: Audio frames containing the synthesized speech.
         """
-        logger.debug(f"{self}: Generating TTS [{text}]")
-
         headers = {
             "Accept": "audio/pcm",
             "Authorization": f"Bearer {self._api_key}",
@@ -1131,7 +1127,7 @@ class RimeNonJsonTTSService(InterruptibleTTSService):
             params = "&".join(f"{k}={v}" for k, v in settings_dict.items() if v is not None)
             url = f"{self._url}?{params}"
             headers = {"Authorization": f"Bearer {self._api_key}"}
-            self._websocket = await websocket_connect(
+            self._websocket = await self._websocket_connect(
                 url, additional_headers=headers, max_size=1024 * 1024 * 16
             )
             await self._call_event_handler("on_connected")
@@ -1199,7 +1195,6 @@ class RimeNonJsonTTSService(InterruptibleTTSService):
         Yields:
             Frame: Audio frames containing the synthesized speech.
         """
-        logger.debug(f"{self}: Generating TTS [{text}]")
         try:
             if not self._websocket or self._websocket.state is State.CLOSED:
                 await self._connect()

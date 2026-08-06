@@ -16,7 +16,7 @@ from anthropic.types.message_param import MessageParam
 from anthropic.types.tool_union_param import ToolUnionParam
 from loguru import logger
 
-from pipecat.adapters.base_llm_adapter import BaseLLMAdapter
+from pipecat.adapters.base_llm_adapter import BaseLLMAdapter, LLMContextConversionError
 from pipecat.adapters.schemas.function_schema import FunctionSchema
 from pipecat.adapters.schemas.tools_schema import ToolsSchema
 from pipecat.processors.aggregators.llm_context import (
@@ -75,6 +75,7 @@ class AnthropicLLMAdapter(BaseLLMAdapter[AnthropicLLMInvocationParams]):
         context: LLMContext,
         enable_prompt_caching: bool,
         system_instruction: str | None = None,
+        ensure_last_message_is_user: bool = False,
     ) -> AnthropicLLMInvocationParams:
         """Get Anthropic-specific LLM invocation parameters from a universal LLM context.
 
@@ -83,6 +84,10 @@ class AnthropicLLMAdapter(BaseLLMAdapter[AnthropicLLMInvocationParams]):
             enable_prompt_caching: Whether prompt caching should be enabled.
             system_instruction: Optional system instruction from service settings
                 or ``run_inference``.
+            ensure_last_message_is_user: Whether to append a minimal user message
+                when the converted message list ends with an assistant message.
+                Required by models without assistant-prefill support, which
+                reject requests ending with an assistant message.
 
         Returns:
             Dictionary of parameters for invoking Anthropic's LLM API.
@@ -90,6 +95,8 @@ class AnthropicLLMAdapter(BaseLLMAdapter[AnthropicLLMInvocationParams]):
         converted = self._from_universal_context_messages(
             self.get_messages(context), system_instruction=system_instruction
         )
+        if ensure_last_message_is_user:
+            self._ensure_last_message_is_user(converted.messages)
         system = self._resolve_system_instruction(
             converted.system if is_given(converted.system) else None,
             system_instruction,
@@ -163,12 +170,17 @@ class AnthropicLLMAdapter(BaseLLMAdapter[AnthropicLLMInvocationParams]):
             if extracted is not None:
                 system = extracted
 
-        # Convert remaining messages to Anthropic format
-        messages = []
+        # Convert remaining messages to Anthropic format, skipping messages that
+        # have no Anthropic representation. A conversion failure (e.g. a
+        # malformed message) is wrapped so it surfaces with its underlying cause.
         try:
-            messages = [self._from_universal_context_message(m) for m in remaining]
+            messages = [
+                converted
+                for m in remaining
+                if (converted := self._from_universal_context_message(m)) is not None
+            ]
         except Exception as e:
-            logger.error(f"Error mapping messages: {e}")
+            raise LLMContextConversionError(e) from e
 
         # Convert any subsequent "system"/"developer"-role messages to "user"-role
         # messages, as Anthropic doesn't support system or developer input messages.
@@ -210,12 +222,31 @@ class AnthropicLLMAdapter(BaseLLMAdapter[AnthropicLLMInvocationParams]):
 
         return self.ConvertedMessages(messages=messages, system=system)
 
-    def _from_universal_context_message(self, message: LLMContextMessage) -> MessageParam:
+    @staticmethod
+    def _ensure_last_message_is_user(messages: list[MessageParam]) -> list[MessageParam]:
+        """Ensure the message list does not end with an assistant message.
+
+        Models without assistant-prefill support reject requests ending with
+        an assistant message. When the last message has ``role="assistant"``,
+        a minimal user message is appended so that the API request is
+        accepted. "." represents a language-neutral no-op user turn.
+
+        Args:
+            messages: The converted message list (may be mutated in-place).
+
+        Returns:
+            The same list, possibly with an appended user message.
+        """
+        if messages and messages[-1]["role"] == "assistant":
+            messages.append({"role": "user", "content": [{"type": "text", "text": "."}]})
+        return messages
+
+    def _from_universal_context_message(self, message: LLMContextMessage) -> MessageParam | None:
         if isinstance(message, LLMSpecificMessage):
             return self._from_anthropic_specific_message(message)
         return self._from_standard_message(message)
 
-    def _from_anthropic_specific_message(self, message: LLMSpecificMessage) -> MessageParam:
+    def _from_anthropic_specific_message(self, message: LLMSpecificMessage) -> MessageParam | None:
         """Convert LLMSpecificMessage to Anthropic format.
 
         Anthropic-specific messages may either be special thought messages that
@@ -224,24 +255,32 @@ class AnthropicLLMAdapter(BaseLLMAdapter[AnthropicLLMInvocationParams]):
 
         Args:
             message: Anthropic-specific message.
+
+        Returns:
+            The message in Anthropic format, or None for a thought that can't be
+            represented as a thinking block.
         """
         # Handle special case of thought messages.
         # These can be converted to standalone "assistant" messages; later
         # these thinking messages will be properly merged into the assistant
         # response messages before the context is sent to Anthropic for the
         # next turn.
-        if (
-            isinstance(message.message, dict)
-            and message.message.get("type") == "thought"
-            and (text := message.message.get("text"))
-            and (signature := message.message.get("signature"))
-        ):
+        if isinstance(message.message, dict) and message.message.get("type") == "thought":
+            # A thinking block is valid to Anthropic only with a signature: it
+            # carries the encrypted reasoning the API decrypts when the block is
+            # passed back, and a block without one can't be round-tripped.
+            # Thought text can legitimately be empty, since models that default
+            # to `display: "omitted"` return thinking blocks with no text.
+            # https://platform.claude.com/docs/en/build-with-claude/thinking#controlling-thinking-display
+            signature = message.message.get("signature")
+            if not signature:
+                return None
             return {
                 "role": "assistant",
                 "content": [
                     {
                         "type": "thinking",
-                        "thinking": text,
+                        "thinking": message.message.get("text") or "",
                         "signature": signature,
                     }
                 ],

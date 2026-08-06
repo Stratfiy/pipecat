@@ -17,7 +17,6 @@ import aiohttp
 import websockets
 from loguru import logger
 from pydantic import BaseModel
-from websockets.asyncio.client import connect as websocket_connect
 from websockets.protocol import State
 
 from pipecat.frames.frames import (
@@ -281,7 +280,7 @@ class AsyncAITTSService(WebsocketTTSService):
             if self._websocket and self._websocket.state is State.OPEN:
                 return
             logger.debug("Connecting to Async")
-            self._websocket = await websocket_connect(
+            self._websocket = await self._websocket_connect(
                 f"{self._url}?api_key={self._api_key}&version={self._api_version}"
             )
             init_msg = {
@@ -445,8 +444,6 @@ class AsyncAITTSService(WebsocketTTSService):
         Yields:
             Frame: Audio frames containing the synthesized speech.
         """
-        logger.debug(f"{self}: Generating TTS [{text}]")
-
         try:
             if not self._websocket or self._websocket.state is State.CLOSED:
                 await self._connect()
@@ -624,8 +621,6 @@ class AsyncAIHttpTTSService(TTSService):
         Yields:
             Frame: Audio frames containing the synthesized speech.
         """
-        logger.debug(f"{self}: Generating TTS [{text}]")
-
         try:
             voice_config = {"mode": "id", "id": self._settings.voice}
 

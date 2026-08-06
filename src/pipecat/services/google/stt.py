@@ -992,6 +992,10 @@ class GoogleSTTService(STTService):
 
                     if result.is_final:
                         self._last_transcript_was_final = True
+                        # Report usage before the transcription frame so
+                        # tracing can attach it to the STT span the frame
+                        # closes.
+                        await self.emit_stt_usage_metrics()
                         await self.push_frame(
                             TranscriptionFrame(
                                 transcript,
@@ -999,6 +1003,7 @@ class GoogleSTTService(STTService):
                                 time_now_iso8601(),
                                 primary_language,
                                 result=result,
+                                finalized=True,
                             )
                         )
                         await self.stop_processing_metrics()

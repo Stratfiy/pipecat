@@ -34,7 +34,6 @@ from pipecat import version as pipecat_version
 
 USER_AGENT = f"pipecat/{pipecat_version()}"
 from pydantic import BaseModel
-from websockets.asyncio.client import connect as websocket_connect
 from websockets.protocol import State
 
 from pipecat.frames.frames import (
@@ -344,8 +343,6 @@ class InworldHttpTTSService(TTSService):
         Returns:
             An asynchronous generator of frames.
         """
-        logger.debug(f"{self}: Generating TTS [{text}] (streaming={self._streaming})")
-
         self._current_run_had_timestamps = False
 
         audio_config = {
@@ -975,7 +972,7 @@ class InworldTTSService(WebsocketTTSService):
                 ("X-User-Agent", USER_AGENT),
                 ("X-Request-Id", request_id),
             ]
-            self._websocket = await websocket_connect(self._url, additional_headers=headers)
+            self._websocket = await self._websocket_connect(self._url, additional_headers=headers)
             await self._call_event_handler("on_connected")
         except Exception as e:
             await self.push_error(error_msg=f"Unknown error occurred: {e}", exception=e)

@@ -4,6 +4,7 @@
 # SPDX-License-Identifier: BSD 2-Clause License
 #
 
+import locale
 import unittest
 
 from pipecat.utils.text.transforms._alnum_utils import normalize
@@ -115,6 +116,69 @@ class TestReplaceText(unittest.IsolatedAsyncioTestCase):
         transform = replace_text([("xyz", "abc")])
         result = await transform("Hello world", "*")
         self.assertEqual(result, "Hello world")
+
+    async def test_word_splitting_replacement(self):
+        """A replacement is allowed to turn one word into several."""
+        transform = replace_text([(r"\bBODYPUMP\b", "body pump")])
+        result = await transform("Try BODYPUMP on Monday morning.", "*")
+        self.assertEqual(result, "Try body pump on Monday morning.")
+
+    async def test_case_only_replacement(self):
+        """A replacement is allowed to change only the case of a word."""
+        transform = replace_text([(r"\bSQL\b", "sql")])
+        result = await transform("Contact SQL support today.", "*")
+        self.assertEqual(result, "Contact sql support today.")
+
+    async def test_inline_ipa_tag_replacement(self):
+        transform = replace_text([(r"\bleisure\b", "<<l|ɛ|ʒ|ə|r>>")])
+        result = await transform("The leisure centre opens at six.", "*")
+        self.assertIn("<<l|ɛ|ʒ|ə|r>>", result)
+
+    async def test_ssml_phoneme_tag_replacement(self):
+        """A word can be wrapped in an SSML phoneme tag (e.g. ElevenLabs'
+        <phoneme alphabet="ipa" ph="...">word</phoneme>) instead of respelled."""
+        transform = replace_text(
+            [(r"(?i)\bSiobhan\b", '<phoneme alphabet="ipa" ph="ʃəˈvɔːn">Siobhan</phoneme>')]
+        )
+        result = await transform("My name is Siobhan.", "*")
+        self.assertIn('<phoneme alphabet="ipa" ph="ʃəˈvɔːn">Siobhan</phoneme>', result)
+
+
+class TestNormalizeCollapsesCaseAndSplitReplacements(unittest.IsolatedAsyncioTestCase):
+    """Whether normalize() treats a case-only or word-splitting replacement as
+    unchanged. normalize() lowercases text and drops whitespace/punctuation, so a
+    replacement that only changes case, or that splits one word into several,
+    normalizes identically on both sides even though the original text cannot be
+    recovered by simple proportional advancement.
+    """
+
+    async def test_word_split_normalizes_the_same_as_original(self):
+        transform = replace_text([(r"\bBODYPUMP\b", "body pump")])
+        result = await transform("BODYPUMP", "*")
+        self.assertEqual(normalize(result), normalize("BODYPUMP"))
+
+    async def test_case_change_normalizes_the_same_as_original(self):
+        transform = replace_text([(r"\bSQL\b", "sql")])
+        result = await transform("SQL", "*")
+        self.assertEqual(normalize(result), normalize("SQL"))
+
+    async def test_pronunciation_respelling_does_not_normalize_the_same(self):
+        """Contrast case: a genuine 1-to-1 respelling ("leisure" -> "lezher") does
+        change the normalized alnum content, so it is correctly flagged as transformed."""
+        transform = replace_text([(r"\bleisure\b", "lezher")])
+        result = await transform("leisure", "*")
+        self.assertNotEqual(normalize(result), normalize("leisure"))
+
+    async def test_ssml_phoneme_tag_normalizes_the_same_as_original(self):
+        """An SSML phoneme tag wraps the word without altering it, so tag-stripped
+        normalization matches the original — unlike a respelling. (The wrapping
+        markup itself is still picked up as a transformed segment by
+        TextSegmentMap, not by normalize() here.)"""
+        transform = replace_text(
+            [(r"\bSiobhan\b", '<phoneme alphabet="ipa" ph="ʃəˈvɔːn">Siobhan</phoneme>')]
+        )
+        result = await transform("Siobhan", "*")
+        self.assertEqual(normalize(result), normalize("Siobhan"))
 
 
 class TestExpandPercentages(unittest.IsolatedAsyncioTestCase):
@@ -311,6 +375,16 @@ class TestExpandCurrency(unittest.IsolatedAsyncioTestCase):
         self.assertIn("one thousand dollars", result)
         self.assertIn("fifty cents", result)
 
+    async def test_extra_fractional_digits_not_leaked(self):
+        # Regression: a fraction with 3+ digits must be fully consumed by the match,
+        # read to cent precision, with no stray digit glued onto the subunit word.
+        result = await expand_currency("The item costs $5.500 today", "*")
+        self.assertEqual(result, "The item costs five dollars and fifty cents today")
+        self.assertNotIn("cents0", result)
+        # Sub-cent precision is dropped (read like a 2-digit amount), not spoken.
+        self.assertEqual(await expand_currency("$3.567", "*"), "three dollars and fifty-six cents")
+        self.assertEqual(await expand_currency("£1.999", "*"), "one pound and ninety-nine pence")
+
 
 class TestNormalizeDates(unittest.IsolatedAsyncioTestCase):
     async def test_iso_date(self):
@@ -348,6 +422,21 @@ class TestNormalizeDates(unittest.IsolatedAsyncioTestCase):
         self.assertIn("21st", await normalize_dates("2023-05-21", "*"))
         self.assertIn("2nd", await normalize_dates("2023-05-02", "*"))
         self.assertIn("3rd", await normalize_dates("2023-05-03", "*"))
+
+    async def test_month_is_english_under_non_english_locale(self):
+        # The month must stay English even when LC_TIME is a non-English locale,
+        # to match the hardcoded-English year and ordinal suffix.
+        saved = locale.setlocale(locale.LC_TIME)
+        try:
+            locale.setlocale(locale.LC_TIME, "de_DE.UTF-8")
+        except locale.Error:
+            self.skipTest("de_DE.UTF-8 locale not available")
+        try:
+            result = await normalize_dates("Meeting on 2023-05-10", "*")
+        finally:
+            locale.setlocale(locale.LC_TIME, saved)
+        self.assertIn("May 10th", result)
+        self.assertNotIn("Mai", result)
 
 
 class TestExpandNumbers(unittest.IsolatedAsyncioTestCase):
