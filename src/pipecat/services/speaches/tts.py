@@ -58,7 +58,6 @@ class SpeachesTTSService(OpenAITTSService):
         upstream OpenAI service adapter maps voices through a fixed whitelist,
         which breaks custom Speaches voices with a ``KeyError``.
         """
-        logger.debug(f"{self}: Generating TTS [{text}]")
         try:
             create_params = {
                 "input": text,

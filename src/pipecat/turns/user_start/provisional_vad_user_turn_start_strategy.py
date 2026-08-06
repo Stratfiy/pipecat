@@ -67,18 +67,29 @@ class ProvisionalVADUserTurnStartStrategy(BaseUserTurnStartStrategy):
             await self._resume_output_audio()
         self._provisional_pause_active = False
 
-    async def reset(self):
-        """Reset the strategy to its initial state."""
-        await super().reset()
+    async def handle_user_turn_started(self):
+        """Ready the strategy to detect the next user turn start."""
+        await self._clear_provisional_pause()
+        self._locked_out_until_bot_stops = False
+        self._bot_speaking = False
+
+    async def handle_user_turn_stopped(self):
+        """Clear turn-scoped state when a turn ends by any path.
+
+        ``_bot_speaking`` is deliberately left untouched: it mirrors live
+        Bot*SpeakingFrames rather than turn-scoped bookkeeping.
+        """
+        await self._clear_provisional_pause()
+        self._locked_out_until_bot_stops = False
+
+    async def _clear_provisional_pause(self):
         await self._cancel_resume_task()
         # The timeout task we just cancelled was the only remaining path that
         # would resume output audio. If a pause is still armed, resume here so
-        # we don't leave the output transport paused after the reset.
+        # we don't leave the output transport paused.
         if self._provisional_pause_active:
             await self._resume_output_audio()
         self._provisional_pause_active = False
-        self._locked_out_until_bot_stops = False
-        self._bot_speaking = False
 
     async def process_frame(self, frame: Frame) -> ProcessFrameResult:
         """Process an incoming frame to detect user turn start."""

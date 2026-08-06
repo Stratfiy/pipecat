@@ -44,7 +44,6 @@ from pipecat.utils.tracing.service_decorators import traced_stt
 
 try:
     import websockets
-    from websockets.asyncio.client import connect as websocket_connect
     from websockets.protocol import State
 except ModuleNotFoundError as e:
     logger.error(f"Exception: {e}")
@@ -175,7 +174,7 @@ class DograhSTTService(STTService, WebsocketService):
             }
 
             logger.debug(f"Connecting to STT WebSocket at {url}")
-            ws = await websocket_connect(url, additional_headers=headers)
+            ws = await self._websocket_connect(url, additional_headers=headers)
             self._websocket = ws
 
             # Send initial configuration

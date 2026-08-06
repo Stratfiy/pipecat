@@ -296,9 +296,9 @@ class TestProvisionalVADUserTurnStartStrategy(unittest.IsolatedAsyncioTestCase):
 
         await strategy.cleanup()
 
-    async def test_reset_during_provisional_pause_resumes_output_audio(self):
+    async def test_turn_started_during_provisional_pause_resumes_output_audio(self):
         # A long pause window keeps the provisional pause armed so the only way
-        # the transport gets resumed is the reset() guard itself.
+        # the transport gets resumed is the handle_user_turn_started() guard.
         strategy = ProvisionalVADUserTurnStartStrategy(pause_secs=10.0)
         await strategy.setup(self.task_manager)
 
@@ -312,9 +312,33 @@ class TestProvisionalVADUserTurnStartStrategy(unittest.IsolatedAsyncioTestCase):
         await strategy.process_frame(VADUserStartedSpeakingFrame())
         self.assertIsInstance(pushed_frames[-1], BotOutputAudioPauseFrame)
 
-        await strategy.reset()
+        await strategy.handle_user_turn_started()
 
         self.assertIsInstance(pushed_frames[-1], BotOutputAudioResumeFrame)
+
+        await strategy.cleanup()
+
+    async def test_turn_stopped_during_provisional_pause_resumes_output_audio(self):
+        # Turns can end by any path (e.g. a forced semantic stop) while a
+        # provisional pause is armed; the stop callback must resume audio.
+        strategy = ProvisionalVADUserTurnStartStrategy(pause_secs=10.0)
+        await strategy.setup(self.task_manager)
+
+        pushed_frames = []
+
+        @strategy.event_handler("on_push_frame")
+        async def on_push_frame(strategy, frame, direction):
+            pushed_frames.append(frame)
+
+        await strategy.process_frame(BotStartedSpeakingFrame())
+        await strategy.process_frame(VADUserStartedSpeakingFrame())
+        self.assertIsInstance(pushed_frames[-1], BotOutputAudioPauseFrame)
+
+        await strategy.handle_user_turn_stopped()
+
+        self.assertIsInstance(pushed_frames[-1], BotOutputAudioResumeFrame)
+        # Live bot-speaking state survives the stop callback.
+        self.assertTrue(strategy._bot_speaking)
 
         await strategy.cleanup()
 

@@ -36,7 +36,6 @@ from pipecat.utils.tracing.service_decorators import traced_tts
 
 try:
     import websockets
-    from websockets.asyncio.client import connect as websocket_connect
     from websockets.protocol import State
 except ModuleNotFoundError as e:
     logger.error(f"Exception: {e}")
@@ -202,7 +201,7 @@ class DograhTTSService(WebsocketTTSService):
             }
 
             logger.debug(f"Connecting to Dograh TTS WebSocket at {url}")
-            ws = await websocket_connect(url, additional_headers=headers)
+            ws = await self._websocket_connect(url, additional_headers=headers)
             self._websocket = ws
             self._remote_initialized_context_ids.clear()
             self._finished_context_ids.clear()
@@ -436,8 +435,6 @@ class DograhTTSService(WebsocketTTSService):
         Yields:
             Frame: Audio frames containing the synthesized speech.
         """
-        logger.debug(f"{self}: Generating TTS [{text}]")
-
         try:
             if not self._websocket or self._websocket.state is State.CLOSED:
                 await self._connect()
