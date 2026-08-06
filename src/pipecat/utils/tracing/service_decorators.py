@@ -1367,54 +1367,34 @@ def traced_gemini_live(operation: str) -> Callable:
                                     except Exception as e:
                                         logger.warning(f"Unable to serialize tool_call output: {e}")
 
-                        elif operation == "llm_tool_result" and args:
-                            # _tool_result(self, tool_call_id, tool_name, tool_result_message)
-                            # so positional args are: (call_id, name, result_dict).
-                            tool_call_id = args[0] if len(args) > 0 else None
-                            tool_call_name = args[1] if len(args) > 1 else None
-                            result_content = args[2] if len(args) > 2 else None
-
-                            if tool_call_id:
-                                operation_attrs["tool.call_id"] = strip_thought_from_id(
-                                    tool_call_id
-                                )
-                            if tool_call_name:
-                                operation_attrs["tool.function_name"] = tool_call_name
-
-                            # Capture the result. result_content is the raw response dict
-                            # passed to FunctionResponse.response (not a wrapper with
-                            # tool_call_id/content keys).
-                            if result_content is not None:
-                                try:
-                                    if isinstance(result_content, str):
-                                        try:
-                                            parsed = json.loads(result_content)
-                                        except json.JSONDecodeError:
-                                            parsed = result_content
-                                    else:
-                                        parsed = result_content
-
-                                    result_str = (
-                                        json.dumps(parsed)
-                                        if not isinstance(parsed, str)
-                                        else parsed
+                        elif operation == "llm_tool_result" and len(args) >= 3:
+                            # _tool_result(self, tool_call_id, tool_call_name, result); its
+                            # positional args, in order. ``result`` is expected to be
+                            # Gemini's FunctionResponse.response payload (a dict), but is
+                            # validated at runtime rather than assumed.
+                            tool_call_id, tool_call_name, result = args[0], args[1], args[2]
+                            try:
+                                if tool_call_id:
+                                    operation_attrs["tool.call_id"] = strip_thought_from_id(
+                                        tool_call_id
                                     )
-                                    if len(result_str) > 2000:
+                                if tool_call_name:
+                                    operation_attrs["tool.function_name"] = tool_call_name
+                                if isinstance(result, dict):
+                                    result_str = json.dumps(result)
+                                    if len(result_str) > 2000:  # larger limit for results
                                         result_str = result_str[:2000] + "..."
                                     operation_attrs["tool.result"] = result_str
-
-                                    if isinstance(parsed, dict):
-                                        if "error" in parsed:
-                                            operation_attrs["tool.result_status"] = "error"
-                                        elif "success" in parsed:
-                                            operation_attrs["tool.result_status"] = "success"
-                                        else:
-                                            operation_attrs["tool.result_status"] = "completed"
-                                except Exception as e:
-                                    operation_attrs["tool.result"] = (
-                                        f"Error processing result: {str(e)}"
-                                    )
-                                    operation_attrs["tool.result_status"] = "processing_error"
+                                    if "error" in result:
+                                        operation_attrs["tool.result_status"] = "error"
+                                    elif "success" in result:
+                                        operation_attrs["tool.result_status"] = "success"
+                                    else:
+                                        operation_attrs["tool.result_status"] = "completed"
+                            except Exception as e:
+                                logging.warning(
+                                    f"Error capturing tool result attributes for tracing: {e}"
+                                )
 
                             # Set "output" so Langfuse renders the tool-role response in the
                             # span panel. The corresponding tool_call is already shown on the
