@@ -130,7 +130,10 @@ class WebsocketService(ABC):
             await self._websocket.ping()
             return True
         except Exception as e:
-            logger.error(f"{self} connection verification failed: {e}")
+            # Returning False hands the decision to the caller, which reports the
+            # failure it leads to. Logging at ERROR here would make one incident
+            # look like two to anything classifying by log level.
+            logger.warning(f"{self} connection verification failed: {e}")
             return False
 
     async def _reconnect_websocket(self, attempt_number: int) -> bool:
@@ -171,19 +174,26 @@ class WebsocketService(ABC):
                         return True
                 except Exception as e:
                     last_exception = e
-                    logger.error(f"{self} reconnection attempt {attempt} failed: {e}")
+                    attempt_msg = f"{self} reconnection attempt {attempt} failed: {e}"
+                    # An ErrorFrame is the report for this failure, so the log
+                    # line beside it stays below ERROR. Emitting both would
+                    # attribute a single failure twice to anything that reads
+                    # error logs and error frames.
                     if report_error:
-                        await report_error(
-                            ErrorFrame(f"{self} reconnection attempt {attempt} failed: {e}")
-                        )
+                        logger.warning(attempt_msg)
+                        await report_error(ErrorFrame(attempt_msg))
+                    else:
+                        logger.error(attempt_msg)
                 wait_time = exponential_backoff_time(attempt)
                 await asyncio.sleep(wait_time)
             msg = f"{self} failed to reconnect after {max_retries} attempts"
             if last_exception:
                 msg += f": {last_exception}"
-            logger.error(msg)
             if report_error:
+                logger.warning(msg)
                 await report_error(ErrorFrame(msg))
+            else:
+                logger.error(msg)
             return False
         finally:
             self._reconnect_in_progress = False
@@ -198,7 +208,7 @@ class WebsocketService(ABC):
                 raise ConnectionError(f"{self} no websocket connected")
             await self._websocket.send(message)
         except Exception as e:
-            logger.error(f"{self} send failed: {e}, will try to reconnect")
+            logger.warning(f"{self} send failed: {e}, will try to reconnect")
             # Try to reconnect before retrying
             success = await self._try_reconnect(report_error=report_error)
             if success and self._websocket is not None:
@@ -206,7 +216,8 @@ class WebsocketService(ABC):
                 # trying to send the message one more time
                 await self._websocket.send(message)
             else:
-                logger.error(f"{self} send failed; unable to reconnect")
+                # _try_reconnect has already reported the failure it gave up on.
+                logger.warning(f"{self} send failed; unable to reconnect")
 
     async def _maybe_try_reconnect(
         self,
@@ -252,7 +263,7 @@ class WebsocketService(ABC):
                     f"{self._quick_failure_tracker.max_consecutive_failures} "
                     f"times immediately after connecting"
                 )
-                logger.error(msg)
+                logger.warning(msg)
                 await report_error(ErrorFrame(msg))
                 return False
 
