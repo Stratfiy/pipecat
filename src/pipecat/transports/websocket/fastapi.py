@@ -204,7 +204,17 @@ class FastAPIWebsocketClient:
             return
 
         if self.is_connected and not self.is_closing:
+            # We initiated the close either way; the flag must be set even when
+            # the close frame is skipped below, so the receive loop does not
+            # report a client disconnect and the output transport stops writing.
             self._closing = True
+            # The application side may have sent its close frame through another
+            # path (e.g. a route handler closing the socket directly) while the
+            # client state is still CONNECTED; sending a second close frame
+            # raises. Same guard as _can_send().
+            if self._websocket.application_state == WebSocketState.DISCONNECTED:
+                logger.debug(f"{self} websocket close frame already sent; skipping close")
+                return
             self._close_task = asyncio.create_task(self._websocket.close(), name="fastapi-ws-close")
             self._close_task.add_done_callback(self._on_close_done)
             done, _ = await asyncio.wait({self._close_task}, timeout=self._ws_close_timeout)
