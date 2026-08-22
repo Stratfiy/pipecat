@@ -31,7 +31,7 @@ from pipecat.frames.frames import (
     BotStartedSpeakingFrame,
     BotStoppedSpeakingFrame,
     CancelFrame,
-    CancelTaskFrame,
+    CancelWorkerFrame,
     EndFrame,
     Frame,
     InterruptionFrame,
@@ -1022,7 +1022,13 @@ class BaseOutputTransport(FrameProcessor):
                         # Send bot stopped speaking frame
                         await self._bot_stopped_speaking()
 
-                        await self._transport.push_frame(CancelTaskFrame(), FrameDirection.UPSTREAM)
+                        # This CancelWorkerFrame would be intercepted upstream
+                        # so that we can call end_call_with_reason and dispose
+                        # off the call properly
+                        await self._transport.push_frame(
+                            CancelWorkerFrame(reason="audio_output_write_failed"),
+                            FrameDirection.UPSTREAM,
+                        )
                         break
 
                     # Sleep before retrying

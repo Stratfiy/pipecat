@@ -8,16 +8,12 @@ class EndTaskReason(Enum):
 
     CALL_DURATION_EXCEEDED = "call_duration_exceeded"
     CALL_TRANSFERRED = "call_transferred"
-    END_CALL_TOOL_REASON = "end_call_tool"
+    END_CALL = "end_call"
     VOICEMAIL_DETECTED = "voicemail_detected"
     USER_IDLE_MAX_DURATION_EXCEEDED = "user_idle_max_duration_exceeded"
     USER_HANGUP = "user_hangup"
-    USER_QUALIFIED = "user_qualified"
-    USER_DISQUALIFIED = "user_disqualified"
     SYSTEM_CANCELLED = "system_cancelled"
-    SYSTEM_CONNECT_ERROR = "system_connect_error"
     UNEXPECTED_ERROR = "unexpected_error"
-    UNKNOWN = "unknown"
     TRANSFER_CALL = "transfer_call"
     PIPELINE_ERROR = "pipeline_error"
 
