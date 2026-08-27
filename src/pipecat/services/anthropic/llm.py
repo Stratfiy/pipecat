@@ -332,7 +332,29 @@ class AnthropicLLMService(LLMService[AnthropicLLMAdapter]):
         # LLM completion
         response = await self._client.beta.messages.create(**params)
 
+        self._record_inference_usage(response)
+
         return next((block.text for block in response.content if hasattr(block, "text")), None)
+
+    def _record_inference_usage(self, response) -> None:
+        """Keep the usage a one-shot completion reported, for the caller to bill.
+
+        The streaming path reports usage through ``start_llm_usage_metrics``;
+        this one runs out-of-band with no pipeline to carry that frame, so the
+        numbers were discarded. Same request, same vendor invoice.
+        """
+        usage = getattr(response, "usage", None)
+        if usage is None:
+            return
+        prompt_tokens = getattr(usage, "input_tokens", 0) or 0
+        completion_tokens = getattr(usage, "output_tokens", 0) or 0
+        self._last_inference_usage = LLMTokenUsage(
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=prompt_tokens + completion_tokens,
+            cache_read_input_tokens=getattr(usage, "cache_read_input_tokens", 0) or 0,
+            cache_creation_input_tokens=getattr(usage, "cache_creation_input_tokens", 0) or 0,
+        )
 
     def _get_llm_invocation_params(self, context: LLMContext) -> AnthropicLLMInvocationParams:
         adapter = self.get_llm_adapter()

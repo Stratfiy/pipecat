@@ -336,6 +336,8 @@ class GoogleLLMService(LLMService[GeminiLLMAdapter]):
             config=generation_config,
         )
 
+        self._record_inference_usage(response)
+
         # Extract text from response
         if response.candidates and response.candidates[0].content:
             for part in response.candidates[0].content.parts:
@@ -343,6 +345,27 @@ class GoogleLLMService(LLMService[GeminiLLMAdapter]):
                     return part.text
 
         return None
+
+    def _record_inference_usage(self, response) -> None:
+        """Keep the usage a one-shot generation reported, for the caller to bill.
+
+        The streaming path reports usage through ``start_llm_usage_metrics``;
+        this one runs out-of-band with no pipeline to carry that frame, so the
+        numbers were discarded. Same request, same vendor invoice.
+        """
+        usage = getattr(response, "usage_metadata", None)
+        if usage is None:
+            return
+        prompt_tokens = getattr(usage, "prompt_token_count", 0) or 0
+        completion_tokens = getattr(usage, "candidates_token_count", 0) or 0
+        cached = getattr(usage, "cached_content_token_count", 0) or 0
+        self._last_inference_usage = LLMTokenUsage(
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=getattr(usage, "total_token_count", 0)
+            or (prompt_tokens + completion_tokens),
+            cache_read_input_tokens=cached,
+        )
 
     def _build_generation_params(
         self,

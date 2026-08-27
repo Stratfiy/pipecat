@@ -411,7 +411,31 @@ class BaseOpenAILLMService(LLMService[OpenAILLMAdapter]):
         # LLM completion
         response = await self._client.chat.completions.create(**params)
 
+        self._record_inference_usage(response)
+
         return response.choices[0].message.content
+
+    def _record_inference_usage(self, response) -> None:
+        """Keep the usage a one-shot completion reported, for the caller to bill.
+
+        ``_process_context`` reports the streaming path's usage through
+        ``start_llm_usage_metrics``; this path has no pipeline to carry that
+        frame, so the numbers were discarded. It is the same request to the same
+        model and the vendor invoices it identically.
+        """
+        usage = getattr(response, "usage", None)
+        if usage is None:
+            return
+        prompt_tokens = usage.prompt_tokens or 0
+        completion_tokens = usage.completion_tokens or 0
+        details = getattr(usage, "prompt_tokens_details", None)
+        cached = getattr(details, "cached_tokens", 0) or 0 if details else 0
+        self._last_inference_usage = LLMTokenUsage(
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=usage.total_tokens or (prompt_tokens + completion_tokens),
+            cache_read_input_tokens=cached,
+        )
 
     @traced_llm
     async def _process_context(self, context: LLMContext):

@@ -55,6 +55,7 @@ from pipecat.frames.frames import (
     NodeTransitionStartedFrame,
     StartFrame,
 )
+from pipecat.metrics.metrics import LLMTokenUsage
 from pipecat.processors.aggregators.llm_context import (
     NOT_GIVEN,
     LLMContext,
@@ -313,6 +314,14 @@ class LLMService(UserTurnCompletionLLMServiceMixin, AIService, Generic[TAdapter]
         self._run_in_parallel = run_in_parallel
         self._group_parallel_tools = group_parallel_tools
         self._function_call_timeout_secs = function_call_timeout_secs
+        # Token usage from the most recent run_inference() call. In-pipeline
+        # generation reports usage through start_llm_usage_metrics(), which
+        # rides the frame bus; a one-shot inference runs out-of-band, with no
+        # pipeline to carry a frame, so its usage had nowhere to go and was
+        # dropped on the floor. Out-of-band inference costs exactly what
+        # in-pipeline inference costs, so an application billing for model use
+        # needs this or it silently eats the difference.
+        self._last_inference_usage: LLMTokenUsage | None = None
         self._enable_async_tool_cancellation: bool = enable_async_tool_cancellation
         self._filter_incomplete_user_turns: bool = False
         self._async_tool_cancellation_enabled: bool = False
@@ -393,6 +402,25 @@ class LLMService(UserTurnCompletionLLMServiceMixin, AIService, Generic[TAdapter]
             The LLM's response as a string, or None if no response is generated.
         """
         raise NotImplementedError(f"run_inference() not supported by {self.__class__.__name__}")
+
+    @property
+    def last_inference_usage(self) -> LLMTokenUsage | None:
+        """Token usage from the most recent :meth:`run_inference` call.
+
+        ``None`` before any one-shot inference has run, and on services whose
+        provider does not report usage for a non-streaming completion.
+
+        In-pipeline generation reports usage through
+        :meth:`start_llm_usage_metrics`, which rides the frame bus. A one-shot
+        inference is out-of-band by definition — there is no pipeline to carry
+        that frame — so usage is surfaced here instead. The two paths cost the
+        same money, and an application that bills for model use needs both or
+        it absorbs the difference silently.
+
+        Read it immediately after the call that produced it: the value is
+        overwritten by the next inference on the same service, not accumulated.
+        """
+        return self._last_inference_usage
 
     def service_metadata_frame(self) -> LLMServiceMetadataFrame:
         """The metadata frame this LLM service broadcasts at start.

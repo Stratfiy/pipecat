@@ -326,6 +326,8 @@ class AWSBedrockLLMService(LLMService[AWSBedrockLLMAdapter]):
             # Call Bedrock without streaming
             response = await client.converse(**request_params)
 
+            self._record_inference_usage(response)
+
             # Extract the response text
             if (
                 "output" in response
@@ -341,6 +343,26 @@ class AWSBedrockLLMService(LLMService[AWSBedrockLLMAdapter]):
                     return content
 
             return None
+
+    def _record_inference_usage(self, response) -> None:
+        """Keep the usage a one-shot converse reported, for the caller to bill.
+
+        The streaming path reports usage through ``start_llm_usage_metrics``;
+        this one runs out-of-band with no pipeline to carry that frame, so the
+        numbers were discarded. Same request, same vendor invoice.
+        """
+        usage = (response or {}).get("usage")
+        if not usage:
+            return
+        prompt_tokens = usage.get("inputTokens") or 0
+        completion_tokens = usage.get("outputTokens") or 0
+        self._last_inference_usage = LLMTokenUsage(
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=usage.get("totalTokens") or (prompt_tokens + completion_tokens),
+            cache_read_input_tokens=usage.get("cacheReadInputTokens") or 0,
+            cache_creation_input_tokens=usage.get("cacheWriteInputTokens") or 0,
+        )
 
     async def _create_converse_stream(self, client, request_params):
         """Create converse stream with optional timeout and retry.
