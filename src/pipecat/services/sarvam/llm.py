@@ -12,14 +12,16 @@ from typing import Literal
 
 from loguru import logger
 from openai import NOT_GIVEN
+from openai.types.chat import ChatCompletionChunk
 
 from pipecat.adapters.services.open_ai_adapter import OpenAILLMInvocationParams
 from pipecat.adapters.services.open_ai_adapter import is_given as openai_is_given
 from pipecat.services.openai.base_llm import OpenAILLMSettings
 from pipecat.services.openai.llm import OpenAILLMService
+from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.services.sarvam._sdk import sdk_headers
 from pipecat.services.settings import NOT_GIVEN as _NOT_GIVEN
-from pipecat.services.settings import _NotGiven, is_given
+from pipecat.services.settings import _NotGiven, assert_given, is_given
 
 
 @dataclass
@@ -125,6 +127,68 @@ class SarvamLLMService(OpenAILLMService):
             default_headers=merged_headers,
             **kwargs,
         )
+
+    async def get_chat_completions(self, context: LLMContext):
+        """Return one complete chunk so Sarvam cannot lose token whitespace.
+
+        Sarvam's OpenAI-compatible streaming endpoint has been observed emitting
+        word pieces without their leading whitespace. Forwarding those deltas
+        directly produced joined text in both the transcript and TTS input. A
+        non-streaming completion preserves the provider's canonical message
+        while this adapter converts it back into one Pipecat-compatible chunk.
+        """
+        adapter = self.get_llm_adapter()
+        params_from_context = adapter.get_llm_invocation_params(
+            context,
+            system_instruction=assert_given(self._settings.system_instruction),
+            convert_developer_to_user=True,
+        )
+        params = self.build_chat_completion_params(params_from_context)
+        params["stream"] = False
+        params.pop("stream_options", None)
+
+        response = await self._client.chat.completions.create(**params)
+
+        choices = []
+        for choice in response.choices:
+            message = choice.message
+            tool_calls = None
+            if message.tool_calls:
+                tool_calls = []
+                for index, tool_call in enumerate(message.tool_calls):
+                    item = tool_call.model_dump(exclude_none=True)
+                    item["index"] = index
+                    tool_calls.append(item)
+            choices.append(
+                {
+                    "index": choice.index,
+                    "delta": {
+                        "role": message.role,
+                        "content": message.content,
+                        "tool_calls": tool_calls,
+                    },
+                    "finish_reason": choice.finish_reason,
+                }
+            )
+
+        payload = {
+            "id": response.id,
+            "object": "chat.completion.chunk",
+            "created": response.created,
+            "model": response.model,
+            "choices": choices,
+        }
+        if response.usage is not None:
+            payload["usage"] = response.usage.model_dump(exclude_none=True)
+        if getattr(response, "system_fingerprint", None) is not None:
+            payload["system_fingerprint"] = response.system_fingerprint
+
+        chunk = ChatCompletionChunk.model_validate(payload)
+
+        async def one_complete_chunk():
+            yield chunk
+
+        return one_complete_chunk()
 
     def build_chat_completion_params(self, params_from_context: OpenAILLMInvocationParams) -> dict:
         """Build parameters for Sarvam chat completion request.
