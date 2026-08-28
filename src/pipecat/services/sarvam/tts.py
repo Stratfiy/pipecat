@@ -63,7 +63,22 @@ from pipecat.services.settings import NOT_GIVEN, TTSSettings, _NotGiven, assert_
 from pipecat.services.tts_service import InterruptibleTTSService, TextAggregationMode, TTSService
 from pipecat.transcriptions.language import Language, resolve_language
 from pipecat.utils.deprecation import deprecated
+from pipecat.utils.text.base_text_filter import BaseTextFilter
 from pipecat.utils.tracing.service_decorators import traced_tts
+
+
+class _SpeakableTextFilter(BaseTextFilter):
+    """Drop fragments that Sarvam cannot synthesize."""
+
+    async def filter(self, text: str) -> str:
+        if any(character.isalnum() for character in text):
+            return text
+        if text.strip():
+            logger.warning(
+                "Dropping punctuation-only Sarvam TTS fragment (length={})",
+                len(text),
+            )
+        return ""
 
 
 class SarvamTTSModel(StrEnum):
@@ -972,6 +987,9 @@ class SarvamTTSService(InterruptibleTTSService):
             **kwargs,
         )
 
+        # Run after caller-supplied filters so rejected punctuation never opens an audio context.
+        self._text_filters = [*self._text_filters, _SpeakableTextFilter()]
+
         # Init-only audio format fields (not runtime-updatable)
         self._speech_sample_rate = str(sample_rate)
         self._output_audio_codec = output_audio_codec
@@ -1193,12 +1211,14 @@ class SarvamTTSService(InterruptibleTTSService):
             await self._websocket.send(json.dumps(msg))
 
     async def _send_text(self, text: str):
-        """Send text to Sarvam WebSocket for synthesis."""
-        if self._websocket and self._websocket.state == State.OPEN:
-            msg = {"type": "text", "data": {"text": text}}
-            await self._websocket.send(json.dumps(msg))
-        else:
-            logger.warning("WebSocket not ready, cannot send text")
+        """Send text, reconnecting instead of silently dropping a reply."""
+        if not self._websocket or self._websocket.state != State.OPEN:
+            logger.warning("Sarvam WebSocket not ready; reconnecting before sending text")
+            await self._connect()
+        if not self._websocket or self._websocket.state != State.OPEN:
+            raise RuntimeError("Sarvam WebSocket is unavailable after reconnect")
+        msg = {"type": "text", "data": {"text": text}}
+        await self._websocket.send(json.dumps(msg))
 
     @traced_tts
     async def run_tts(self, text: str, context_id: str) -> AsyncGenerator[Frame | None, None]:
