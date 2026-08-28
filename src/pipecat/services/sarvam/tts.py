@@ -1021,7 +1021,7 @@ class SarvamTTSService(InterruptibleTTSService):
         """Flush any pending audio synthesis by sending flush command."""
         try:
             if self._websocket:
-                msg = {"type": "flush"}
+                msg = {"type": "flush", "data": {}}
                 await self._websocket.send(json.dumps(msg))
         except Exception as e:
             await self.push_error(error_msg=f"Error sending flush to Sarvam: {e}", exception=e)
@@ -1189,7 +1189,7 @@ class SarvamTTSService(InterruptibleTTSService):
     async def _send_keepalive(self):
         """Send keepalive message to maintain connection."""
         if self._websocket and self._websocket.state == State.OPEN:
-            msg = {"type": "ping"}
+            msg = {"type": "ping", "data": {}}
             await self._websocket.send(json.dumps(msg))
 
     async def _send_text(self, text: str):
