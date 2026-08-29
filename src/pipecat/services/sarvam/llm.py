@@ -13,6 +13,7 @@ from typing import Literal
 from loguru import logger
 from openai import NOT_GIVEN
 from openai.types.chat import ChatCompletionChunk
+from openai.types.completion_usage import CompletionUsage
 
 from pipecat.adapters.services.open_ai_adapter import OpenAILLMInvocationParams
 from pipecat.adapters.services.open_ai_adapter import is_given as openai_is_given
@@ -129,13 +130,19 @@ class SarvamLLMService(OpenAILLMService):
         )
 
     async def get_chat_completions(self, context: LLMContext):
-        """Return one complete chunk so Sarvam cannot lose token whitespace.
+        """Request without streaming, then replay the reply as chunks.
 
         Sarvam's OpenAI-compatible streaming endpoint has been observed emitting
         word pieces without their leading whitespace. Forwarding those deltas
-        directly produced joined text in both the transcript and TTS input. A
-        non-streaming completion preserves the provider's canonical message
-        while this adapter converts it back into one Pipecat-compatible chunk.
+        directly produced joined text in both the transcript and TTS input --
+        "Hellothere" -- so this asks for the canonical message instead and
+        rebuilds the chunk sequence a well-behaved stream would have sent.
+
+        The cost is no time-to-first-token: the caller waits for the whole
+        reply to generate, and ``max_tokens`` is the only lever on that wait
+        while the provider's stream cannot be trusted.
+
+        See :meth:`_as_chunks` for why the shape of the replay matters.
         """
         adapter = self.get_llm_adapter()
         params_from_context = adapter.get_llm_invocation_params(
@@ -148,47 +155,83 @@ class SarvamLLMService(OpenAILLMService):
         params.pop("stream_options", None)
 
         response = await self._client.chat.completions.create(**params)
+        chunks = self._as_chunks(response)
 
-        choices = []
-        for choice in response.choices:
-            message = choice.message
-            tool_calls = None
-            if message.tool_calls:
-                tool_calls = []
-                for index, tool_call in enumerate(message.tool_calls):
-                    item = tool_call.model_dump(exclude_none=True)
-                    item["index"] = index
-                    tool_calls.append(item)
-            choices.append(
-                {
-                    "index": choice.index,
-                    "delta": {
-                        "role": message.role,
-                        "content": message.content,
-                        "tool_calls": tool_calls,
-                    },
-                    "finish_reason": choice.finish_reason,
-                }
-            )
+        async def replayed_chunks():
+            for chunk in chunks:
+                yield chunk
 
-        payload = {
+        return replayed_chunks()
+
+    def _as_chunks(self, response) -> list[ChatCompletionChunk]:
+        """Split one completion into the chunk sequence a stream would have sent.
+
+        One chunk per tool call, because that is what the consuming loop
+        expects. ``BaseOpenAILLMService._process_context`` reads
+        ``delta.tool_calls[0]`` and nothing else from a chunk, and separates one
+        call from the next by watching ``tool_call.index`` change *across*
+        chunks. A single chunk holding three calls therefore yields the first
+        and silently discards the rest.
+
+        Content is emitted separately for the same reason: that loop reads
+        ``delta.content`` only in the ``elif`` after ``delta.tool_calls``, so
+        text sharing a chunk with a tool call is never seen.
+        """
+        base = {
             "id": response.id,
             "object": "chat.completion.chunk",
             "created": response.created,
             "model": response.model,
-            "choices": choices,
         }
-        if response.usage is not None:
-            payload["usage"] = response.usage.model_dump(exclude_none=True)
         if getattr(response, "system_fingerprint", None) is not None:
-            payload["system_fingerprint"] = response.system_fingerprint
+            base["system_fingerprint"] = response.system_fingerprint
 
-        chunk = ChatCompletionChunk.model_validate(payload)
+        def chunk(delta: dict, *, finish_reason=None, index: int = 0) -> ChatCompletionChunk:
+            return ChatCompletionChunk.model_validate(
+                {
+                    **base,
+                    "choices": [{"index": index, "delta": delta, "finish_reason": finish_reason}],
+                }
+            )
 
-        async def one_complete_chunk():
-            yield chunk
+        chunks: list[ChatCompletionChunk] = []
+        for choice in response.choices:
+            message = choice.message
+            if message.content:
+                chunks.append(
+                    chunk(
+                        {"role": message.role, "content": message.content},
+                        index=choice.index,
+                    )
+                )
+            for position, tool_call in enumerate(message.tool_calls or []):
+                item = tool_call.model_dump(exclude_none=True)
+                item["index"] = position
+                chunks.append(
+                    chunk(
+                        {"role": message.role, "tool_calls": [item]},
+                        index=choice.index,
+                    )
+                )
 
-        return one_complete_chunk()
+        # An empty reply still has to produce one chunk: the base loop reads
+        # model name and usage off the stream, and a stream that yields nothing
+        # reports neither.
+        if not chunks:
+            chunks.append(chunk({"role": "assistant", "content": None}))
+
+        # finish_reason and usage belong on the last chunk, as they do on the
+        # wire -- attaching them earlier ends the turn before the tool calls
+        # behind them have been read.
+        last = chunks[-1]
+        if response.choices:
+            last.choices[0].finish_reason = response.choices[0].finish_reason
+        if response.usage is not None:
+            last.usage = CompletionUsage.model_validate(
+                response.usage.model_dump(exclude_none=True)
+            )
+
+        return chunks
 
     def build_chat_completion_params(self, params_from_context: OpenAILLMInvocationParams) -> dict:
         """Build parameters for Sarvam chat completion request.
