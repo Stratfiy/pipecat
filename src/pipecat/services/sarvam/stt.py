@@ -844,6 +844,19 @@ class SarvamSTTService(STTService):
                 if transcript and transcript.strip():
                     # Record tracing for this transcription event
                     await self._handle_transcription(transcript, True, language)
+                    # finalized=True: this is the whole utterance, not a partial.
+                    # Sarvam emits no interim results -- there is one data
+                    # message per utterance and ``on_utterance_end`` has just
+                    # fired -- so every frame from here is final by
+                    # construction, which is why _handle_transcription is
+                    # already told is_final=True above.
+                    #
+                    # Without the flag the turn stop strategies cannot take
+                    # their finalized fast path, and each turn waits out
+                    # ``SARVAM_TTFS_P99 - VAD stop_secs`` (1.17 - 0.2 = 0.97s)
+                    # for a final transcript that is already in hand. That
+                    # safety net is meant for the case where the transcript has
+                    # not arrived; here it is dead air on every turn.
                     await self.push_frame(
                         TranscriptionFrame(
                             transcript,
@@ -851,6 +864,7 @@ class SarvamSTTService(STTService):
                             time_now_iso8601(),
                             language,
                             result=(message.dict() if hasattr(message, "dict") else str(message)),
+                            finalized=True,
                         )
                     )
 

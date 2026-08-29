@@ -47,3 +47,62 @@ def test_get_language_string_returns_model_default_when_unset():
 
     assert service._get_language_string() == service._config.default_language
     assert service._config.default_language == "unknown"
+
+
+class TestFinalTranscriptsAreMarkedFinalized:
+    """Sarvam emits one data message per utterance, and it is always final.
+
+    The turn stop strategies keep a safety net sized to the service's p99
+    time-to-final-segment -- ``SARVAM_TTFS_P99`` (1.17s) less the VAD's
+    ``stop_secs`` (0.2s), so ~0.97s -- for the case where speech has ended but
+    the transcript has not arrived. ``TranscriptionFrame.finalized`` is how an
+    STT says "nothing more is coming" and collapses that wait.
+
+    Sarvam had the answer and was not saying it: there is no interim path in
+    this service, ``on_utterance_end`` fires immediately before the frame is
+    built, and ``_handle_transcription`` is already passed ``is_final=True``.
+    Every turn paid the full net for a transcript already in hand.
+    """
+
+    @staticmethod
+    def _data_message(transcript: str):
+        class _Data:
+            def __init__(self):
+                self.transcript = transcript
+                self.language_code = "hi-IN"
+
+        class _Message:
+            def __init__(self):
+                self.type = "data"
+                self.data = _Data()
+
+            def dict(self):
+                return {"type": "data", "transcript": transcript}
+
+        return _Message()
+
+    async def _push_one(self, transcript: str):
+        from unittest.mock import AsyncMock
+
+        service = SarvamSTTService(api_key="test-key")
+        service.push_frame = AsyncMock()
+        service.stop_processing_metrics = AsyncMock()
+        service._call_event_handler = AsyncMock()
+        await service._handle_message(self._data_message(transcript))
+        return [c.args[0] for c in service.push_frame.await_args_list]
+
+    @pytest.mark.asyncio
+    async def test_the_transcript_frame_is_marked_finalized(self):
+        frames = await self._push_one("नमस्ते")
+
+        assert len(frames) == 1
+        assert frames[0].text == "नमस्ते"
+        assert frames[0].finalized is True, (
+            "Without this the turn waits out SARVAM_TTFS_P99 minus the VAD's "
+            "stop_secs on every turn, for a final transcript it already has."
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_blank_transcript_pushes_nothing(self):
+        """Guard the branch the flag lives in, so the fix cannot move out of it."""
+        assert await self._push_one("   ") == []
