@@ -522,7 +522,7 @@ class GladiaSTTService(WebsocketSTTService):
             self._session_id = response["id"]
             logger.info(f"{self} Session URL: {self._session_url}")
 
-        await self._connect_websocket()
+        await self._connect_websocket_with_retry()
 
         await super()._connect()
 

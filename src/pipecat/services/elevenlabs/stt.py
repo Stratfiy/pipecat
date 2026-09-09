@@ -715,7 +715,7 @@ class ElevenLabsRealtimeSTTService(WebsocketSTTService):
         """Establish WebSocket connection to ElevenLabs Realtime STT."""
         self._connected_event.clear()
         try:
-            await self._connect_websocket()
+            await self._connect_websocket_with_retry()
 
             await super()._connect()
 

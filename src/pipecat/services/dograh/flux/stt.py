@@ -203,7 +203,7 @@ class DograhFluxSTTService(DeepgramFluxSTTBase, WebsocketService):
         """Build the MPS Flux URL and open the WebSocket connection."""
         await super()._connect()
         self._websocket_url = f"{self._base_url}{self._ws_path}?{self._build_dograh_query_string()}"
-        await self._connect_websocket()
+        await self._connect_websocket_with_retry()
 
     async def _disconnect(self):
         """Disconnect from WebSocket and clean up tasks."""

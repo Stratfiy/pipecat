@@ -6,6 +6,7 @@
 
 """OpenAI Realtime LLM service implementation with WebSocket support."""
 
+import asyncio
 import base64
 import io
 import json
@@ -726,22 +727,49 @@ class OpenAIRealtimeLLMService(LLMService[OpenAIRealtimeLLMAdapter]):
         """
         await self._ws_send(event.model_dump(exclude_none=True))
 
+    #: Attempts allowed when opening the connection. Unlike the websocket
+    #: services, this one has no reconnect machinery at all: a failure here was
+    #: terminal for the call, reported as a non-fatal error, and left the agent
+    #: unable to say anything for the rest of it.
+    MAX_CONNECT_ATTEMPTS = 3
+
+    #: Backoff between those attempts, in seconds. Short on purpose: the caller
+    #: is already on the line listening to silence, and a transient connect
+    #: failure clears in well under a second. The 4s floor of
+    #: exponential_backoff_time belongs to mid-call reconnects, not to this.
+    CONNECT_BACKOFF_SECONDS = (0.25, 0.5)
+
     async def _connect(self):
-        try:
-            if self._websocket:
-                # Here we assume that if we have a websocket, we are connected. We
-                # handle disconnections in the send/recv code paths.
+        if self._websocket:
+            # Here we assume that if we have a websocket, we are connected. We
+            # handle disconnections in the send/recv code paths.
+            return
+
+        for attempt in range(1, self.MAX_CONNECT_ATTEMPTS + 1):
+            try:
+                self._websocket = await websocket_connect(
+                    uri=self.base_url,
+                    additional_headers={
+                        "Authorization": f"Bearer {self.api_key}",
+                    },
+                )
+                self._receive_task = self.create_task(self._receive_task_handler())
+                if attempt > 1:
+                    logger.info(f"{self} connected on attempt {attempt}")
                 return
-            self._websocket = await websocket_connect(
-                uri=self.base_url,
-                additional_headers={
-                    "Authorization": f"Bearer {self.api_key}",
-                },
-            )
-            self._receive_task = self.create_task(self._receive_task_handler())
-        except Exception as e:
-            await self.push_error(error_msg=f"Error connecting: {e}", exception=e)
-            self._websocket = None
+            except Exception as e:
+                self._websocket = None
+                if attempt == self.MAX_CONNECT_ATTEMPTS:
+                    await self.push_error(error_msg=f"Error connecting: {e}", exception=e)
+                    return
+                wait_time = self.CONNECT_BACKOFF_SECONDS[
+                    min(attempt - 1, len(self.CONNECT_BACKOFF_SECONDS) - 1)
+                ]
+                logger.warning(
+                    f"{self} connection failed (attempt {attempt}/"
+                    f"{self.MAX_CONNECT_ATTEMPTS}): {e}; retrying in {wait_time}s"
+                )
+                await asyncio.sleep(wait_time)
 
     async def _disconnect(self):
         try:
