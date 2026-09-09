@@ -303,7 +303,7 @@ class CartesiaSTTService(WebsocketSTTService):
         yield None
 
     async def _connect(self):
-        await self._connect_websocket()
+        await self._connect_websocket_with_retry()
 
         await super()._connect()
 

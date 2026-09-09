@@ -557,7 +557,7 @@ class SonioxSTTService(WebsocketSTTService):
 
         Establishes websocket connection and starts receive and keepalive tasks.
         """
-        await self._connect_websocket()
+        await self._connect_websocket_with_retry()
 
         await super()._connect()
 

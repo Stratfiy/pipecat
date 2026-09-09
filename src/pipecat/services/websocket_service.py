@@ -35,6 +35,20 @@ class WebsocketService(ABC):
     _MIN_STABLE_CONNECTION_DURATION = 5.0  # seconds
     _MAX_CONSECUTIVE_QUICK_FAILURES = 3
 
+    # Attempts allowed for the *first* connection of a call, before any
+    # receive loop exists. See _connect_websocket_with_retry.
+    _MAX_INITIAL_CONNECT_ATTEMPTS = 3
+
+    # Backoff between those attempts, in seconds — deliberately not
+    # exponential_backoff_time, which starts at 4s. That is the right shape for
+    # a mid-call reconnect, where the provider is most likely rate-limiting or
+    # restarting and there is a conversation already in progress to hold. It is
+    # the wrong shape here: the caller has just been answered and is listening
+    # to silence, so three attempts on that schedule would spend eight seconds
+    # before concluding anything. A transient connect failure clears in well
+    # under a second, so retry fast and give up fast.
+    _INITIAL_CONNECT_BACKOFF_SECONDS = (0.25, 0.5)
+
     def __init__(self, *, reconnect_on_error: bool = True, **kwargs):
         """Initialize the websocket service.
 
@@ -79,6 +93,55 @@ class WebsocketService(ABC):
         if not await self._verify_connection():
             raise ConnectionError(f"{self} websocket reconnection failed verification")
         return True
+
+    async def _connect_websocket_with_retry(self) -> bool:
+        """Establish the first connection, retrying a transient failure.
+
+        Every retry path in this class runs *after* a connection has already
+        succeeded once: :meth:`_try_reconnect` is reached from the receive loop
+        and from :meth:`send_with_retry`, both of which need a live socket to
+        have existed. The very first connect had nothing. A blip there — a
+        provider restarting, a DNS hiccup, a TLS reset — left the service with
+        ``self._websocket = None``, no receive task, and no second attempt, so
+        the single most likely moment to fail was the only one with no
+        recovery. Downstream that is a mute agent for the rest of the call.
+
+        Subclasses implement ``_connect_websocket`` by catching their own
+        exceptions and pushing an ErrorFrame, so failure is not raised and
+        cannot be caught here. The socket itself is the signal: set on success,
+        left ``None`` on failure. That is already the contract every caller
+        relies on (``if self._websocket and not self._receive_task``), so this
+        reads it rather than changing it.
+
+        Each failed attempt still pushes the subclass's own error frame, which
+        is the existing behaviour and honest — those attempts really did fail.
+        What changes is that a later one can now succeed.
+
+        Returns:
+            True if a socket is connected, False if every attempt failed.
+        """
+        for attempt in range(1, self._MAX_INITIAL_CONNECT_ATTEMPTS + 1):
+            await self._connect_websocket()
+            if self._websocket is not None:
+                if attempt > 1:
+                    logger.info(f"{self} connected on attempt {attempt}")
+                return True
+            if attempt == self._MAX_INITIAL_CONNECT_ATTEMPTS:
+                break
+            wait_time = self._INITIAL_CONNECT_BACKOFF_SECONDS[
+                min(attempt - 1, len(self._INITIAL_CONNECT_BACKOFF_SECONDS) - 1)
+            ]
+            logger.warning(
+                f"{self} initial connection failed (attempt {attempt}/"
+                f"{self._MAX_INITIAL_CONNECT_ATTEMPTS}); retrying in {wait_time}s"
+            )
+            await asyncio.sleep(wait_time)
+
+        logger.error(
+            f"{self} could not establish its first connection after "
+            f"{self._MAX_INITIAL_CONNECT_ATTEMPTS} attempts"
+        )
+        return False
 
     async def _try_reconnect(
         self,

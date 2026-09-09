@@ -240,7 +240,7 @@ class CartesiaTurnsSTTService(WebsocketSTTService):
 
     async def _connect(self):
         await super()._connect()
-        await self._connect_websocket()
+        await self._connect_websocket_with_retry()
 
     async def _disconnect(self):
         await super()._disconnect()

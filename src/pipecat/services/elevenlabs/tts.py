@@ -718,7 +718,7 @@ class ElevenLabsTTSService(WebsocketTTSService):
     async def _connect(self):
         await super()._connect()
 
-        await self._connect_websocket()
+        await self._connect_websocket_with_retry()
 
         if self._websocket and not self._receive_task:
             self._receive_task = self.create_task(self._receive_task_handler(self._report_error))
