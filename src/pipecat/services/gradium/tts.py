@@ -231,7 +231,7 @@ class GradiumTTSService(WebsocketTTSService):
                 await self.cancel_task(self._receive_task)
                 self._receive_task = None
 
-        await self._connect_websocket()
+        await self._connect_websocket_with_retry()
 
         if self._websocket and not self._receive_task:
             logger.debug(f"{self}: setting receive task")

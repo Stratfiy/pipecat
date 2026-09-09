@@ -279,7 +279,7 @@ class DeepgramFluxSTTService(DeepgramFluxSTTBase, WebsocketService):
         """
         await super()._connect()
         self._websocket_url = f"{self._url}?{self._build_query_string()}"
-        await self._connect_websocket()
+        await self._connect_websocket_with_retry()
 
     async def _disconnect(self):
         """Disconnect from WebSocket and clean up tasks.

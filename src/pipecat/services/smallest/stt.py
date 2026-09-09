@@ -289,7 +289,7 @@ class SmallestSTTService(WebsocketSTTService):
     async def _connect(self):
         self._connected_event.clear()
         try:
-            await self._connect_websocket()
+            await self._connect_websocket_with_retry()
             await super()._connect()
 
             if self._websocket and not self._receive_task:

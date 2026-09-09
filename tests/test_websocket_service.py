@@ -453,3 +453,77 @@ async def test_bounded_close_against_unresponsive_peer(log_sink):
     finally:
         handshake_done.set()
         server.close()
+
+
+# ---------------------------------------------------------------------------
+# Initial connect — the one path that had no retry
+# ---------------------------------------------------------------------------
+#
+# Every other retry path in this class runs after a connection has already
+# succeeded once: _try_reconnect is reached from the receive loop and from
+# send_with_retry, both of which need a live socket to have existed. The very
+# first connect had nothing, so the most likely moment to fail was the only one
+# with no recovery — and downstream that is a service that never works again for
+# the rest of the call.
+
+
+class FlakyConnectService(ConcreteWebsocketService):
+    """Fails its first ``fail_times`` connects, then succeeds."""
+
+    def __init__(self, fail_times: int, **kwargs):
+        super().__init__(**kwargs)
+        self._fail_times = fail_times
+        self.attempts = 0
+
+    async def _connect_websocket(self):
+        self.attempts += 1
+        if self.attempts <= self._fail_times:
+            # Subclasses swallow their own exception and leave the socket None
+            # rather than raising — that is the contract this retry reads.
+            self._websocket = None
+            return
+        self._websocket = AsyncMock()
+
+
+@pytest.mark.asyncio
+async def test_a_first_time_connect_does_not_retry():
+    service = FlakyConnectService(fail_times=0)
+    assert await service._connect_websocket_with_retry() is True
+    assert service.attempts == 1
+
+
+@pytest.mark.asyncio
+async def test_a_transient_failure_is_retried_and_recovers():
+    service = FlakyConnectService(fail_times=1)
+    assert await service._connect_websocket_with_retry() is True
+    assert service.attempts == 2
+    assert service._websocket is not None
+
+
+@pytest.mark.asyncio
+async def test_it_gives_up_after_the_attempt_limit():
+    service = FlakyConnectService(fail_times=99)
+    assert await service._connect_websocket_with_retry() is False
+    assert service.attempts == service._MAX_INITIAL_CONNECT_ATTEMPTS
+    assert service._websocket is None
+
+
+@pytest.mark.asyncio
+async def test_the_backoff_is_short_enough_for_a_live_caller():
+    """The caller is on the line listening to silence while this runs.
+
+    exponential_backoff_time starts at 4s, which would spend eight seconds
+    across three attempts before concluding anything. That schedule is for
+    mid-call reconnects, where a conversation is already in progress to hold.
+    """
+    service = ConcreteWebsocketService()
+    assert sum(service._INITIAL_CONNECT_BACKOFF_SECONDS) < 1.0
+
+
+@pytest.mark.asyncio
+async def test_it_waits_between_attempts():
+    service = FlakyConnectService(fail_times=1)
+    with patch("pipecat.services.websocket_service.asyncio.sleep", new_callable=AsyncMock) as sleep:
+        await service._connect_websocket_with_retry()
+    sleep.assert_awaited_once()
+    assert sleep.await_args.args[0] == service._INITIAL_CONNECT_BACKOFF_SECONDS[0]

@@ -1795,7 +1795,7 @@ class WebsocketLLMService(LLMService[TAdapter], WebsocketService, Generic[TAdapt
     async def _connect(self):
         """Connect: reset flags and establish the websocket."""
         await super()._connect()
-        await self._connect_websocket()
+        await self._connect_websocket_with_retry()
 
     async def _disconnect(self):
         """Disconnect: set flags and close the websocket."""
